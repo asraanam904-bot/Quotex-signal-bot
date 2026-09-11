@@ -1,25 +1,296 @@
-<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Signal Bot</title>
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Real Market Signal Bot</title>
+
 <style>
-*{box-sizing:border-box}body{margin:0;background:#070b14;color:#f4f7ff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}
-main{max-width:680px;margin:auto;padding:18px 14px 40px}.top{padding:8px 4px 15px}.title{font-size:28px;font-weight:850}.sub{color:#91a0bb;font-size:13px;margin-top:4px}
-.card{background:#101827;border:1px solid #26344d;border-radius:18px;padding:15px;margin-top:12px}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-select,input,button{width:100%;height:48px;border-radius:12px;border:1px solid #33435f;background:#0a1120;color:white;padding:0 12px;font-size:16px}
-button{background:#2563eb;border:0;font-weight:800}.signal{text-align:center;padding:28px 10px;margin-top:14px;border-radius:18px;background:#0b1220;font-size:48px;font-weight:900}.score{text-align:center;color:#9eabc4;margin-top:8px}
-.row{display:flex;gap:10px;justify-content:space-between;padding:11px 3px;border-bottom:1px solid #253249;color:#dbe3f5}.yes{color:#7ee787}.no{color:#f2cc60}
-.status{font-size:12px;color:#8fa0bc}.warn{font-size:12px;line-height:1.45;color:#b7c3d8}.pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#45d483;margin-right:6px}
-</style></head><body><main>
-<div class="top"><div class="title">📈 Live Signal Bot</div><div class="sub"><span class="pulse"></span>Signal-only • iPhone ready • no automatic trades</div></div>
-<div class="card"><div class="controls"><input id="sym" value="EUR/USD"><select id="tf"><option>1min</option><option selected>5min</option><option>15min</option><option>1h</option></select></div><button onclick="run()" style="margin-top:10px">ANALYZE NOW</button>
-<div id="sig" class="signal">⚪</div><div id="score" class="score">Waiting…</div></div>
-<div class="card"><div id="why"></div></div>
-<div class="card warn">⚠️ This engine is a decision aid, not a guarantee. Live data must be connected through an authorized market-data account. A 99.999% win rate cannot be honestly promised.</div>
-</main><script>
-let timer;
-async function run(){let s=document.getElementById('sym').value,i=document.getElementById('tf').value;let d=await fetch('/api/live?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)).then(x=>x.json());
-if(d.error){document.getElementById('sig').textContent='⚠️';document.getElementById('score').textContent=d.error;return}
-document.getElementById('sig').textContent=d.signal==='BUY'?'🟢 BUY':d.signal==='SELL'?'🔴 SELL':'⚪ NO TRADE';
-document.getElementById('score').textContent=d.symbol+' • '+d.timeframe+' • confirmation '+d.score+'/100 • '+(d.price||'');
-document.getElementById('why').innerHTML=d.reasons.map(x=>'<div class="row"><span>'+x+'</span><span class="yes">✓</span></div>').join('');
+*{box-sizing:border-box}
+
+body{
+  margin:0;
+  background:#070b14;
+  color:#f4f7ff;
+  font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;
 }
-run();timer=setInterval(run,60000);
-</script></body></html>
+
+.container{
+  max-width:680px;
+  margin:auto;
+  padding:20px 14px 40px;
+}
+
+h1{
+  font-size:28px;
+  margin:5px 0 6px;
+}
+
+.sub{
+  color:#91a0bb;
+  font-size:13px;
+  margin-bottom:18px;
+}
+
+label{
+  display:block;
+  margin-bottom:7px;
+  color:#b8c4d9;
+}
+
+select,button{
+  width:100%;
+  height:50px;
+  border-radius:12px;
+  border:1px solid #33435f;
+  background:#0a1120;
+  color:white;
+  padding:0 12px;
+  font-size:16px;
+  margin-bottom:10px;
+}
+
+button{
+  background:#2563eb;
+  border:0;
+  font-weight:800;
+}
+
+button:active{
+  opacity:.8;
+}
+
+#status{
+  color:#91a0bb;
+  font-size:13px;
+  margin:12px 2px;
+}
+
+.card{
+  background:#101827;
+  border:1px solid #26344d;
+  border-radius:18px;
+  padding:16px;
+  margin-top:12px;
+}
+
+.buy{
+  border-color:#238636;
+}
+
+.sell{
+  border-color:#da3633;
+}
+
+.signal{
+  font-size:25px;
+  font-weight:900;
+  margin-bottom:8px;
+}
+
+.buy .signal{
+  color:#7ee787;
+}
+
+.sell .signal{
+  color:#ff7b72;
+}
+
+.score{
+  font-size:18px;
+  font-weight:800;
+  margin:7px 0;
+}
+
+.info{
+  color:#b7c3d8;
+  font-size:14px;
+  line-height:1.6;
+}
+
+ul{
+  padding-left:20px;
+  color:#dbe3f5;
+}
+
+.warn{
+  margin-top:18px;
+  padding:12px;
+  border-radius:12px;
+  background:#111827;
+  color:#9eabc4;
+  font-size:12px;
+  line-height:1.5;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>📈 Real-Market Signal Bot</h1>
+
+<div class="sub">
+  Signal-only • Automatic Pair Scanner • <b>NOT OTC</b>
+</div>
+
+<label for="interval">Timeframe</label>
+
+<select id="interval">
+  <option value="5min" selected>5 Minutes ⭐</option>
+  <option value="1min">1 Minute</option>
+  <option value="15min">15 Minutes</option>
+  <option value="1h">1 Hour</option>
+</select>
+
+<button onclick="scan()">
+  🔎 SCAN REAL MARKET NOW
+</button>
+
+<div id="status">
+  Ready to scan...
+</div>
+
+<div id="signals"></div>
+
+<div class="warn">
+⚠️ This bot uses real-market forex data, not Quotex OTC data.
+<br><br>
+Setup score is NOT a win probability. No strategy can guarantee profit. Use signals as a decision aid only.
+</div>
+
+</div>
+
+<script>
+
+async function scan(){
+
+  const interval =
+    document.getElementById("interval").value;
+
+  const status =
+    document.getElementById("status");
+
+  const box =
+    document.getElementById("signals");
+
+  status.textContent =
+    "🔎 Scanning real-market pairs...";
+
+  box.innerHTML = "";
+
+  try{
+
+    const response =
+      await fetch(
+        "/api/scan?interval=" +
+        encodeURIComponent(interval)
+      );
+
+    const data =
+      await response.json();
+
+    if(data.error){
+
+      status.textContent =
+        "❌ " + data.error;
+
+      return;
+    }
+
+    status.textContent =
+      "✅ Scanned " +
+      data.scanned_pairs.length +
+      " real pairs • " +
+      new Date().toLocaleTimeString();
+
+    if(!data.signals ||
+       data.signals.length === 0){
+
+      box.innerHTML = `
+        <div class="card">
+          ⚪ <b>No qualifying setup right now.</b>
+          <br><br>
+          Wait for a clean setup.
+        </div>
+      `;
+
+      return;
+    }
+
+    data.signals.forEach(x => {
+
+      const isBuy =
+        x.signal === "BUY";
+
+      const cls =
+        isBuy ? "buy" : "sell";
+
+      const reasons =
+        (x.reasons || [])
+        .map(reason =>
+          "<li>" + reason + "</li>"
+        )
+        .join("");
+
+      box.innerHTML += `
+
+        <div class="card ${cls}">
+
+          <div class="signal">
+            ${isBuy ? "🟢 BUY" : "🔴 SELL"}
+            — ${x.symbol}
+          </div>
+
+          <div class="score">
+            ⭐ Setup Score: ${x.score}/100
+          </div>
+
+          <div class="info">
+
+            ⏱️ Timeframe:
+            <b>${x.interval || interval}</b>
+
+            <br>
+
+            🎯 Setup:
+            <b>${x.setup}</b>
+
+            <br>
+
+            💰 Price:
+            <b>${x.price}</b>
+
+          </div>
+
+          <ul>
+            ${reasons}
+          </ul>
+
+        </div>
+
+      `;
+
+    });
+
+  }
+
+  catch(error){
+
+    status.textContent =
+      "❌ Scan error: " +
+      error.message;
+
+  }
+
+}
+
+/* Automatic scan every 60 seconds */
+scan();
+
+setInterval(scan,60000);
+
+</script>
+
+</body>
+</html>
