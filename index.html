@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Signal Bot</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#070b14;color:#f4f7ff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}
+main{max-width:680px;margin:auto;padding:18px 14px 40px}.top{padding:8px 4px 15px}.title{font-size:28px;font-weight:850}.sub{color:#91a0bb;font-size:13px;margin-top:4px}
+.card{background:#101827;border:1px solid #26344d;border-radius:18px;padding:15px;margin-top:12px}.controls{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+select,input,button{width:100%;height:48px;border-radius:12px;border:1px solid #33435f;background:#0a1120;color:white;padding:0 12px;font-size:16px}
+button{background:#2563eb;border:0;font-weight:800}.signal{text-align:center;padding:28px 10px;margin-top:14px;border-radius:18px;background:#0b1220;font-size:48px;font-weight:900}.score{text-align:center;color:#9eabc4;margin-top:8px}
+.row{display:flex;gap:10px;justify-content:space-between;padding:11px 3px;border-bottom:1px solid #253249;color:#dbe3f5}.yes{color:#7ee787}.no{color:#f2cc60}
+.status{font-size:12px;color:#8fa0bc}.warn{font-size:12px;line-height:1.45;color:#b7c3d8}.pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#45d483;margin-right:6px}
+</style></head><body><main>
+<div class="top"><div class="title">📈 Live Signal Bot</div><div class="sub"><span class="pulse"></span>Signal-only • iPhone ready • no automatic trades</div></div>
+<div class="card"><div class="controls"><input id="sym" value="EUR/USD"><select id="tf"><option>1min</option><option selected>5min</option><option>15min</option><option>1h</option></select></div><button onclick="run()" style="margin-top:10px">ANALYZE NOW</button>
+<div id="sig" class="signal">⚪</div><div id="score" class="score">Waiting…</div></div>
+<div class="card"><div id="why"></div></div>
+<div class="card warn">⚠️ This engine is a decision aid, not a guarantee. Live data must be connected through an authorized market-data account. A 99.999% win rate cannot be honestly promised.</div>
+</main><script>
+let timer;
+async function run(){let s=document.getElementById('sym').value,i=document.getElementById('tf').value;let d=await fetch('/api/live?symbol='+encodeURIComponent(s)+'&interval='+encodeURIComponent(i)).then(x=>x.json());
+if(d.error){document.getElementById('sig').textContent='⚠️';document.getElementById('score').textContent=d.error;return}
+document.getElementById('sig').textContent=d.signal==='BUY'?'🟢 BUY':d.signal==='SELL'?'🔴 SELL':'⚪ NO TRADE';
+document.getElementById('score').textContent=d.symbol+' • '+d.timeframe+' • confirmation '+d.score+'/100 • '+(d.price||'');
+document.getElementById('why').innerHTML=d.reasons.map(x=>'<div class="row"><span>'+x+'</span><span class="yes">✓</span></div>').join('');
+}
+run();timer=setInterval(run,60000);
+</script></body></html>
