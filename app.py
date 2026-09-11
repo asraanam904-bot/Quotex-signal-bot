@@ -291,6 +291,67 @@ def tradingview():
     return jsonify({"ok": True})
 
 
+
+# Automatically scan REAL forex market pairs (NOT Quotex OTC).
+SCAN_PAIRS = [
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
+    "AUD/USD", "USD/CAD", "NZD/USD"
+]
+
+@app.get("/api/scan")
+def scan():
+    """Scan supported real-market forex pairs and return all qualifying setups."""
+    interval = request.args.get("interval", "5min")
+    results = []
+    errors = []
+
+    for symbol in SCAN_PAIRS:
+        try:
+            url = "https://api.twelvedata.com/time_series"
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "outputsize": 100,
+                "apikey": KEY
+            }
+            data = requests.get(url, params=params, timeout=8).json()
+            if "values" not in data:
+                errors.append({"symbol": symbol, "error": data.get("message", "Data unavailable")})
+                continue
+
+            values = list(reversed(data["values"]))
+            candles = [{
+                "open": f(x["open"]), "high": f(x["high"]),
+                "low": f(x["low"]), "close": f(x["close"])
+            } for x in values]
+
+            signal, score, setup, reasons = analyze(candles)
+            price = candles[-1]["close"]
+
+            if signal in ("BUY", "SELL"):
+                result = {
+                    "signal": signal, "score": score, "symbol": symbol,
+                    "timeframe": interval, "setup": setup,
+                    "reasons": reasons, "price": price, "updated": time.time()
+                }
+                results.append(result)
+                send_telegram(symbol, interval, signal, score, setup, reasons, price)
+        except Exception as e:
+            errors.append({"symbol": symbol, "error": str(e)})
+
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return jsonify({
+        "market": "REAL_FOREX",
+        "otc": False,
+        "interval": interval,
+        "scanned_pairs": SCAN_PAIRS,
+        "signals": results,
+        "errors": errors,
+        "count": len(results),
+        "updated": time.time()
+    })
+
+
 @app.get("/api/latest")
 def get_latest():
     return jsonify(latest)
