@@ -3,7 +3,7 @@ import os, time, statistics, requests
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-ub
+
 load_dotenv()
 app = Flask(__name__)
 
@@ -188,6 +188,7 @@ def analyze(c):
 
 
 FX_TZ = ZoneInfo("America/New_York")
+IST = timezone(timedelta(hours=5, minutes=30))
 
 SCAN_PAIRS = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
@@ -207,6 +208,11 @@ def fx_market_open(now_utc=None):
     if wd == 4:  # Friday: closes 17:00 ET
         return et.time() < datetime.strptime("17:00", "%H:%M").time()
     return True
+
+
+def india_time_string(dt=None):
+    dt = dt or datetime.now(timezone.utc)
+    return dt.astimezone(IST).strftime("%d-%m-%Y %I:%M:%S %p")
 
 
 def interval_seconds(interval):
@@ -338,7 +344,9 @@ def live():
             "timeframe": interval,
             "setup": "REAL MARKET CLOSED",
             "reasons": ["Forex real market is closed. OTC is not scanned."],
-            "updated": time.time()
+            "updated": time.time(),
+            "signal_time_ist": india_time_string(),
+            "timezone": "UTC+05:30"
         }
         return jsonify(latest)
 
@@ -355,7 +363,9 @@ def live():
             "setup": setup,
             "reasons": reasons + ["Signal based on the latest CLOSED candle"],
             "updated": time.time(),
-            "price": price
+            "price": price,
+            "signal_time_ist": india_time_string(),
+            "timezone": "UTC+05:30"
         }
 
         if signal in ("BUY", "SELL"):
@@ -385,7 +395,9 @@ def scan():
             "signals": [],
             "errors": [],
             "count": 0,
-            "message": "REAL MARKET CLOSED â NO SIGNALS"
+            "message": "REAL MARKET CLOSED â NO SIGNALS",
+            "current_time_ist": india_time_string(),
+            "timezone": "UTC+05:30"
         })
 
     results = []
@@ -407,7 +419,9 @@ def scan():
                     "setup": setup,
                     "reasons": reasons + ["Based on the latest CLOSED candle"],
                     "price": price,
-                    "updated": time.time()
+                    "updated": time.time(),
+                    "signal_time_ist": india_time_string(),
+                    "timezone": "UTC+05:30"
                 }
                 results.append(result)
                 send_telegram(
@@ -427,7 +441,9 @@ def scan():
         "scanned_pairs": SCAN_PAIRS,
         "signals": results,
         "errors": errors,
-        "count": len(results)
+        "count": len(results),
+        "current_time_ist": india_time_string(),
+        "timezone": "UTC+05:30"
     })
 
 
