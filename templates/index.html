@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Real Market Signal Bot</title>
+<title>Quotex Live Signal Assistant</title>
 
 <style>
 *{box-sizing:border-box}
@@ -75,9 +75,17 @@ button{
   margin-top:12px
 }
 
-.buy{border-color:#238636}
-.sell{border-color:#da3633}
-.closed{border-color:#8b5cf6}
+.buy{
+  border-color:#238636
+}
+
+.sell{
+  border-color:#da3633
+}
+
+.closed{
+  border-color:#8b5cf6
+}
 
 .signal{
   font-size:25px;
@@ -85,9 +93,17 @@ button{
   margin-bottom:8px
 }
 
-.buy .signal{color:#7ee787}
-.sell .signal{color:#ff7b72}
-.closed .signal{color:#c4b5fd}
+.buy .signal{
+  color:#7ee787
+}
+
+.sell .signal{
+  color:#ff7b72
+}
+
+.closed .signal{
+  color:#c4b5fd
+}
 
 .score{
   font-size:18px;
@@ -122,66 +138,119 @@ ul{
 
 <div class="container">
 
-<h1>📈 Real-Market Signal Bot</h1>
+<h1>📈 Quotex Live Signal Assistant</h1>
 
 <div class="sub">
-Signal-only • Automatic Pair Scanner • <b>NOT OTC</b>
+Signal-only • 7-Pair Scanner •
+<b>QUOTEX LIVE / REAL MARKET</b>
 </div>
 
 <div class="time">
-🇮🇳 India Time: <b id="ist">Loading…</b> • UTC+05:30
+🇮🇳 India Time:
+<b id="ist">Loading…</b>
+• UTC+05:30
 </div>
 
-<label for="interval">Timeframe</label>
+
+<label for="interval">
+Timeframe
+</label>
 
 <select id="interval">
-  <option value="5min" selected>5 Minutes ⭐</option>
-  <option value="1min">1 Minute</option>
-  <option value="15min">15 Minutes</option>
-  <option value="1h">1 Hour</option>
+
+<option value="5min" selected>
+5 Minutes ⭐
+</option>
+
+<option value="1min">
+1 Minute
+</option>
+
+<option value="15min">
+15 Minutes
+</option>
+
+<option value="1h">
+1 Hour
+</option>
+
 </select>
 
+
 <button onclick="scan()">
-🔎 SCAN REAL MARKET NOW
+🔎 SCAN QUOTEX LIVE MARKET
 </button>
+
 
 <div id="status">
 Ready to scan...
 </div>
 
+
 <div id="signals"></div>
 
+
 <div class="warn">
-⚠️ Only real-market forex data is scanned. OTC is excluded.
+
+⚠️ Real-market FX data is scanned
+for manual use on Quotex.
+OTC is excluded.
+
 <br><br>
-Signals are generated only while the real FX market is open and from completed candles.
+
+Signal is generated only after a
+candle is fully CLOSED.
+
+A BUY/SELL signal is for the
+<b>NEXT candle</b>.
+
 <br><br>
-Setup score is NOT a win probability. No strategy can guarantee profit.
+
+⚠️ Signal only — you place any
+Quotex trade manually.
+
+No automatic Quotex login/trading.
+
+<br><br>
+
+Setup score is NOT a win probability.
+No strategy can guarantee profit.
+
 </div>
 
 </div>
+
 
 <script>
+
 
 function updateClock(){
 
   document.getElementById("ist").textContent =
+
     new Intl.DateTimeFormat("en-IN",{
+
       timeZone:"Asia/Kolkata",
+
       day:"2-digit",
       month:"2-digit",
       year:"numeric",
+
       hour:"2-digit",
       minute:"2-digit",
       second:"2-digit",
+
       hour12:true
+
     }).format(new Date());
 
 }
 
+
 updateClock();
 
 setInterval(updateClock,1000);
+
 
 
 async function scan(){
@@ -197,7 +266,7 @@ async function scan(){
 
 
   status.textContent =
-    "🔎 Scanning real-market pairs...";
+    "🔎 Scanning live-market pairs...";
 
   box.innerHTML="";
 
@@ -210,6 +279,7 @@ async function scan(){
         + encodeURIComponent(interval)
       );
 
+
     const d =
       await r.json();
 
@@ -220,7 +290,9 @@ async function scan(){
         "❌ "+d.error;
 
       return;
+
     }
+
 
 
     if(d.market_open===false){
@@ -241,7 +313,7 @@ async function scan(){
           <div class="info">
 
             No BUY/SELL signals are generated
-            while the real forex market is closed.
+            while the real market is closed.
 
             <br><br>
 
@@ -254,23 +326,29 @@ async function scan(){
       `;
 
       return;
+
     }
 
 
+
     status.textContent =
-      "🟢 REAL MARKET OPEN • Scanned "
-      +d.scanned_pairs.length
+      "🟢 LIVE MARKET OPEN • Scanned "
+      +(d.scanned_pairs ?
+         d.scanned_pairs.length : 0)
       +" pairs • "
       +(d.current_time_ist||"");
 
 
-    if(!d.signals || d.signals.length===0){
+
+    if(!d.signals ||
+       d.signals.length===0){
 
       box.innerHTML=`
 
         <div class="card">
 
-          ⚪ <b>No qualifying setup right now.</b>
+          ⚪
+          <b>No qualifying setup right now.</b>
 
           <br><br>
 
@@ -282,10 +360,13 @@ async function scan(){
       `;
 
       return;
+
     }
 
 
+
     d.signals.forEach(x=>{
+
 
       const cls =
         x.signal==="BUY"
@@ -303,6 +384,7 @@ async function scan(){
 
         <div class="card ${cls}">
 
+
           <div class="signal">
 
             ${x.signal==="BUY"
@@ -314,12 +396,14 @@ async function scan(){
           </div>
 
 
+
           <div class="score">
 
             ⭐ Setup Score:
             ${x.score}/100
 
           </div>
+
 
 
           <div class="info">
@@ -329,25 +413,38 @@ async function scan(){
 
             <br>
 
+
             🎯 Setup:
             <b>${x.setup}</b>
 
             <br>
+
+
+            👉 Entry:
+            <b>NEXT CANDLE</b>
+
+            <br>
+
 
             💰 Price:
             <b>${x.price}</b>
 
             <br>
 
+
             🇮🇳 Signal time:
-            <b>${x.signal_time_ist||"—"} IST</b>
+            <b>
+              ${x.signal_time_ist||"—"} IST
+            </b>
 
           </div>
+
 
 
           <ul>
             ${reasons}
           </ul>
+
 
         </div>
 
@@ -356,7 +453,9 @@ async function scan(){
     });
 
 
-  }catch(e){
+  }
+
+  catch(e){
 
     status.textContent =
       "❌ Scan error: "+e.message;
@@ -366,9 +465,11 @@ async function scan(){
 }
 
 
+
 scan();
 
 setInterval(scan,60000);
+
 
 </script>
 
