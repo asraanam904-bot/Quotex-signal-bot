@@ -11,30 +11,36 @@ body{
   margin:0;
   background:#070b14;
   color:#f4f7ff;
-  font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;
+  font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif
 }
 
 .container{
   max-width:680px;
   margin:auto;
-  padding:20px 14px 40px;
+  padding:20px 14px 40px
 }
 
 h1{
   font-size:28px;
-  margin:5px 0 6px;
+  margin:5px 0 6px
 }
 
 .sub{
   color:#91a0bb;
   font-size:13px;
-  margin-bottom:18px;
+  margin-bottom:14px
+}
+
+.time{
+  color:#cbd5e1;
+  font-size:13px;
+  margin-bottom:16px
 }
 
 label{
   display:block;
   margin-bottom:7px;
-  color:#b8c4d9;
+  color:#b8c4d9
 }
 
 select,button{
@@ -46,23 +52,19 @@ select,button{
   color:white;
   padding:0 12px;
   font-size:16px;
-  margin-bottom:10px;
+  margin-bottom:10px
 }
 
 button{
   background:#2563eb;
   border:0;
-  font-weight:800;
-}
-
-button:active{
-  opacity:.8;
+  font-weight:800
 }
 
 #status{
   color:#91a0bb;
   font-size:13px;
-  margin:12px 2px;
+  margin:12px 2px
 }
 
 .card{
@@ -70,46 +72,38 @@ button:active{
   border:1px solid #26344d;
   border-radius:18px;
   padding:16px;
-  margin-top:12px;
+  margin-top:12px
 }
 
-.buy{
-  border-color:#238636;
-}
-
-.sell{
-  border-color:#da3633;
-}
+.buy{border-color:#238636}
+.sell{border-color:#da3633}
+.closed{border-color:#8b5cf6}
 
 .signal{
   font-size:25px;
   font-weight:900;
-  margin-bottom:8px;
+  margin-bottom:8px
 }
 
-.buy .signal{
-  color:#7ee787;
-}
-
-.sell .signal{
-  color:#ff7b72;
-}
+.buy .signal{color:#7ee787}
+.sell .signal{color:#ff7b72}
+.closed .signal{color:#c4b5fd}
 
 .score{
   font-size:18px;
   font-weight:800;
-  margin:7px 0;
+  margin:7px 0
 }
 
 .info{
   color:#b7c3d8;
   font-size:14px;
-  line-height:1.6;
+  line-height:1.65
 }
 
 ul{
   padding-left:20px;
-  color:#dbe3f5;
+  color:#dbe3f5
 }
 
 .warn{
@@ -119,7 +113,7 @@ ul{
   background:#111827;
   color:#9eabc4;
   font-size:12px;
-  line-height:1.5;
+  line-height:1.5
 }
 </style>
 </head>
@@ -131,7 +125,11 @@ ul{
 <h1>📈 Real-Market Signal Bot</h1>
 
 <div class="sub">
-  Signal-only • Automatic Pair Scanner • <b>NOT OTC</b>
+Signal-only • Automatic Pair Scanner • <b>NOT OTC</b>
+</div>
+
+<div class="time">
+🇮🇳 India Time: <b id="ist">Loading…</b> • UTC+05:30
 </div>
 
 <label for="interval">Timeframe</label>
@@ -144,24 +142,47 @@ ul{
 </select>
 
 <button onclick="scan()">
-  🔎 SCAN REAL MARKET NOW
+🔎 SCAN REAL MARKET NOW
 </button>
 
 <div id="status">
-  Ready to scan...
+Ready to scan...
 </div>
 
 <div id="signals"></div>
 
 <div class="warn">
-⚠️ This bot uses real-market forex data, not Quotex OTC data.
+⚠️ Only real-market forex data is scanned. OTC is excluded.
 <br><br>
-Setup score is NOT a win probability. No strategy can guarantee profit. Use signals as a decision aid only.
+Signals are generated only while the real FX market is open and from completed candles.
+<br><br>
+Setup score is NOT a win probability. No strategy can guarantee profit.
 </div>
 
 </div>
 
 <script>
+
+function updateClock(){
+
+  document.getElementById("ist").textContent =
+    new Intl.DateTimeFormat("en-IN",{
+      timeZone:"Asia/Kolkata",
+      day:"2-digit",
+      month:"2-digit",
+      year:"numeric",
+      hour:"2-digit",
+      minute:"2-digit",
+      second:"2-digit",
+      hour12:true
+    }).format(new Date());
+
+}
+
+updateClock();
+
+setInterval(updateClock,1000);
+
 
 async function scan(){
 
@@ -174,82 +195,137 @@ async function scan(){
   const box =
     document.getElementById("signals");
 
+
   status.textContent =
     "🔎 Scanning real-market pairs...";
 
-  box.innerHTML = "";
+  box.innerHTML="";
+
 
   try{
 
-    const response =
+    const r =
       await fetch(
-        "/api/scan?interval=" +
-        encodeURIComponent(interval)
+        "/api/scan?interval="
+        + encodeURIComponent(interval)
       );
 
-    const data =
-      await response.json();
+    const d =
+      await r.json();
 
-    if(data.error){
+
+    if(d.error){
 
       status.textContent =
-        "❌ " + data.error;
+        "❌ "+d.error;
 
       return;
     }
 
-    status.textContent =
-      "✅ Scanned " +
-      data.scanned_pairs.length +
-      " real pairs • " +
-      new Date().toLocaleTimeString();
 
-    if(!data.signals ||
-       data.signals.length === 0){
+    if(d.market_open===false){
 
-      box.innerHTML = `
-        <div class="card">
-          ⚪ <b>No qualifying setup right now.</b>
-          <br><br>
-          Wait for a clean setup.
+      status.textContent =
+        "🔴 REAL MARKET CLOSED • "
+        +(d.current_time_ist||"");
+
+
+      box.innerHTML=`
+
+        <div class="card closed">
+
+          <div class="signal">
+            🔴 REAL MARKET CLOSED
+          </div>
+
+          <div class="info">
+
+            No BUY/SELL signals are generated
+            while the real forex market is closed.
+
+            <br><br>
+
+            OTC is not scanned.
+
+          </div>
+
         </div>
+
       `;
 
       return;
     }
 
-    data.signals.forEach(x => {
 
-      const isBuy =
-        x.signal === "BUY";
+    status.textContent =
+      "🟢 REAL MARKET OPEN • Scanned "
+      +d.scanned_pairs.length
+      +" pairs • "
+      +(d.current_time_ist||"");
+
+
+    if(!d.signals || d.signals.length===0){
+
+      box.innerHTML=`
+
+        <div class="card">
+
+          ⚪ <b>No qualifying setup right now.</b>
+
+          <br><br>
+
+          Real market is open,
+          but no clean setup was found.
+
+        </div>
+
+      `;
+
+      return;
+    }
+
+
+    d.signals.forEach(x=>{
 
       const cls =
-        isBuy ? "buy" : "sell";
+        x.signal==="BUY"
+        ? "buy"
+        : "sell";
+
 
       const reasons =
-        (x.reasons || [])
-        .map(reason =>
-          "<li>" + reason + "</li>"
-        )
+        (x.reasons||[])
+        .map(z=>"<li>"+z+"</li>")
         .join("");
 
-      box.innerHTML += `
+
+      box.innerHTML+=`
 
         <div class="card ${cls}">
 
           <div class="signal">
-            ${isBuy ? "🟢 BUY" : "🔴 SELL"}
+
+            ${x.signal==="BUY"
+              ?"🟢 BUY"
+              :"🔴 SELL"}
+
             — ${x.symbol}
+
           </div>
 
+
           <div class="score">
-            ⭐ Setup Score: ${x.score}/100
+
+            ⭐ Setup Score:
+            ${x.score}/100
+
           </div>
+
 
           <div class="info">
 
             ⏱️ Timeframe:
-            <b>${x.interval || interval}</b>
+            <b>${x.interval||interval}</b>
 
             <br>
 
@@ -261,7 +337,13 @@ async function scan(){
             💰 Price:
             <b>${x.price}</b>
 
+            <br>
+
+            🇮🇳 Signal time:
+            <b>${x.signal_time_ist||"—"} IST</b>
+
           </div>
+
 
           <ul>
             ${reasons}
@@ -273,19 +355,17 @@ async function scan(){
 
     });
 
-  }
 
-  catch(error){
+  }catch(e){
 
     status.textContent =
-      "❌ Scan error: " +
-      error.message;
+      "❌ Scan error: "+e.message;
 
   }
 
 }
 
-/* Automatic scan every 60 seconds */
+
 scan();
 
 setInterval(scan,60000);
