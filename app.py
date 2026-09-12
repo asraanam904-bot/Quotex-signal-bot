@@ -1,5 +1,7 @@
 from flask import Flask, jsonify, request, render_template
 import os, time, statistics, requests
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -184,6 +186,99 @@ def analyze(c):
     return "NO TRADE", 0, "Waiting", reasons
 
 
+
+FX_TZ = ZoneInfo("America/New_York")
+
+SCAN_PAIRS = [
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
+    "AUD/USD", "USD/CAD", "NZD/USD"
+]
+
+def fx_market_open(now_utc=None):
+    """Approximate global spot-FX open window: Sun 17:00 ET through Fri 17:00 ET."""
+    now_utc = now_utc or datetime.now(timezone.utc)
+    et = now_utc.astimezone(FX_TZ)
+    wd = et.weekday()  # Mon=0 ... Sun=6
+
+    if wd == 5:  # Saturday
+        return False
+    if wd == 6:  # Sunday: opens 17:00 ET
+        return et.time() >= datetime.strptime("17:00", "%H:%M").time()
+    if wd == 4:  # Friday: closes 17:00 ET
+        return et.time() < datetime.strptime("17:00", "%H:%M").time()
+    return True
+
+
+def interval_seconds(interval):
+    return {
+        "1min": 60,
+        "5min": 300,
+        "15min": 900,
+        "1h": 3600
+    }.get(interval, 300)
+
+
+def completed_candles(values, interval):
+    """Keep only fully closed UTC candles and reject stale feeds."""
+    sec = interval_seconds(interval)
+    now = datetime.now(timezone.utc)
+
+    completed = []
+    for x in values:
+        try:
+            dt = datetime.fromisoformat(
+                x["datetime"].replace("Z", "+00:00")
+            )
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt + timedelta(seconds=sec) <= now:
+                completed.append({
+                    "open": f(x["open"]),
+                    "high": f(x["high"]),
+                    "low": f(x["low"]),
+                    "close": f(x["close"]),
+                    "_dt": dt
+                })
+        except Exception:
+            continue
+
+    completed.sort(key=lambda z: z["_dt"])
+
+    if not completed:
+        return []
+
+    # Do not generate a signal from an old/stale market feed.
+    age = (now - completed[-1]["_dt"]).total_seconds()
+    max_age = max(sec * 3, 15 * 60)
+    if age > max_age:
+        return []
+
+    return [{k: v for k, v in x.items() if k != "_dt"} for x in completed]
+
+
+def fetch_market_candles(symbol, interval):
+    """Fetch UTC candles from Twelve Data and return only closed candles."""
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "outputsize": 100,
+        "timezone": "UTC",
+        "apikey": KEY
+    }
+    data = requests.get(url, params=params, timeout=10).json()
+
+    if "values" not in data:
+        raise RuntimeError(data.get("message", "Data unavailable"))
+
+    candles = completed_candles(data["values"], interval)
+    if len(candles) < 40:
+        raise RuntimeError("Waiting for enough fresh, closed candles")
+
+    return candles
+
+
+
 def send_telegram(symbol, interval, signal, score, setup, reasons, price):
     global last_alert
 
@@ -235,27 +330,20 @@ def live():
     if not KEY:
         return jsonify({"error": "API key missing. Add TWELVE_DATA_API_KEY to Render Environment."})
 
-    try:
-        url = "https://api.twelvedata.com/time_series"
-        params = {
+    if not fx_market_open():
+        latest = {
+            "signal": "NO TRADE",
+            "score": 0,
             "symbol": symbol,
-            "interval": interval,
-            "outputsize": 100,
-            "apikey": KEY
+            "timeframe": interval,
+            "setup": "REAL MARKET CLOSED",
+            "reasons": ["Forex real market is closed. OTC is not scanned."],
+            "updated": time.time()
         }
-        data = requests.get(url, params=params, timeout=8).json()
+        return jsonify(latest)
 
-        if "values" not in data:
-            return jsonify({"error": data.get("message", "Data unavailable")})
-
-        values = list(reversed(data["values"]))
-        candles = [{
-            "open": f(x["open"]),
-            "high": f(x["high"]),
-            "low": f(x["low"]),
-            "close": f(x["close"])
-        } for x in values]
-
+    try:
+        candles = fetch_market_candles(symbol, interval)
         signal, score, setup, reasons = analyze(candles)
         price = candles[-1]["close"]
 
@@ -265,7 +353,7 @@ def live():
             "symbol": symbol,
             "timeframe": interval,
             "setup": setup,
-            "reasons": reasons,
+            "reasons": reasons + ["Signal based on the latest CLOSED candle"],
             "updated": time.time(),
             "price": price
         }
@@ -279,6 +367,70 @@ def live():
         return jsonify({"error": str(e)})
 
 
+@app.get("/api/scan")
+def scan():
+    """Scan multiple real-market forex pairs; never scan OTC."""
+    interval = request.args.get("interval", "5min")
+
+    if not KEY:
+        return jsonify({"error": "API key missing. Add TWELVE_DATA_API_KEY to Render Environment."})
+
+    if not fx_market_open():
+        return jsonify({
+            "market": "REAL_FOREX",
+            "market_open": False,
+            "otc": False,
+            "interval": interval,
+            "scanned_pairs": SCAN_PAIRS,
+            "signals": [],
+            "errors": [],
+            "count": 0,
+            "message": "REAL MARKET CLOSED â NO SIGNALS"
+        })
+
+    results = []
+    errors = []
+
+    for symbol in SCAN_PAIRS:
+        try:
+            candles = fetch_market_candles(symbol, interval)
+            signal, score, setup, reasons = analyze(candles)
+
+            if signal in ("BUY", "SELL"):
+                price = candles[-1]["close"]
+                result = {
+                    "signal": signal,
+                    "score": score,
+                    "symbol": symbol,
+                    "timeframe": interval,
+                    "interval": interval,
+                    "setup": setup,
+                    "reasons": reasons + ["Based on the latest CLOSED candle"],
+                    "price": price,
+                    "updated": time.time()
+                }
+                results.append(result)
+                send_telegram(
+                    symbol, interval, signal, score, setup, reasons, price
+                )
+
+        except Exception as e:
+            errors.append({"symbol": symbol, "error": str(e)})
+
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    return jsonify({
+        "market": "REAL_FOREX",
+        "market_open": True,
+        "otc": False,
+        "interval": interval,
+        "scanned_pairs": SCAN_PAIRS,
+        "signals": results,
+        "errors": errors,
+        "count": len(results)
+    })
+
+
 @app.post("/api/tradingview")
 def tradingview():
     if request.headers.get("X-Bot-Token") != TV_TOKEN:
@@ -289,67 +441,6 @@ def tradingview():
     latest.update(payload)
     latest["updated"] = time.time()
     return jsonify({"ok": True})
-
-
-
-# Automatically scan REAL forex market pairs (NOT Quotex OTC).
-SCAN_PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-    "AUD/USD", "USD/CAD", "NZD/USD"
-]
-
-@app.get("/api/scan")
-def scan():
-    """Scan supported real-market forex pairs and return all qualifying setups."""
-    interval = request.args.get("interval", "5min")
-    results = []
-    errors = []
-
-    for symbol in SCAN_PAIRS:
-        try:
-            url = "https://api.twelvedata.com/time_series"
-            params = {
-                "symbol": symbol,
-                "interval": interval,
-                "outputsize": 100,
-                "apikey": KEY
-            }
-            data = requests.get(url, params=params, timeout=8).json()
-            if "values" not in data:
-                errors.append({"symbol": symbol, "error": data.get("message", "Data unavailable")})
-                continue
-
-            values = list(reversed(data["values"]))
-            candles = [{
-                "open": f(x["open"]), "high": f(x["high"]),
-                "low": f(x["low"]), "close": f(x["close"])
-            } for x in values]
-
-            signal, score, setup, reasons = analyze(candles)
-            price = candles[-1]["close"]
-
-            if signal in ("BUY", "SELL"):
-                result = {
-                    "signal": signal, "score": score, "symbol": symbol,
-                    "timeframe": interval, "setup": setup,
-                    "reasons": reasons, "price": price, "updated": time.time()
-                }
-                results.append(result)
-                send_telegram(symbol, interval, signal, score, setup, reasons, price)
-        except Exception as e:
-            errors.append({"symbol": symbol, "error": str(e)})
-
-    results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return jsonify({
-        "market": "REAL_FOREX",
-        "otc": False,
-        "interval": interval,
-        "scanned_pairs": SCAN_PAIRS,
-        "signals": results,
-        "errors": errors,
-        "count": len(results),
-        "updated": time.time()
-    })
 
 
 @app.get("/api/latest")
