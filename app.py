@@ -379,7 +379,7 @@ def live():
 
 @app.get("/api/scan")
 def scan():
-    """Scan multiple real-market forex pairs; never scan OTC."""
+    """Scan real-market FX pairs for manual use on Quotex; never scan OTC."""
     interval = request.args.get("interval", "5min")
 
     if not KEY:
@@ -387,7 +387,7 @@ def scan():
 
     if not fx_market_open():
         return jsonify({
-            "market": "REAL_FOREX",
+            "market": "QUOTEX_LIVE_SIGNAL_ASSISTANT",
             "market_open": False,
             "otc": False,
             "interval": interval,
@@ -396,6 +396,7 @@ def scan():
             "errors": [],
             "count": 0,
             "message": "REAL MARKET CLOSED â NO SIGNALS",
+            "execution": "MANUAL_QUOTEX_ONLY",
             "current_time_ist": india_time_string(),
             "timezone": "UTC+05:30"
         })
@@ -421,6 +422,8 @@ def scan():
                     "price": price,
                     "updated": time.time(),
                     "signal_time_ist": india_time_string(),
+                    "entry": "NEXT CANDLE",
+                    "execution": "MANUAL_QUOTEX_ONLY",
                     "timezone": "UTC+05:30"
                 }
                 results.append(result)
@@ -434,7 +437,7 @@ def scan():
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     return jsonify({
-        "market": "REAL_FOREX",
+        "market": "QUOTEX_LIVE_SIGNAL_ASSISTANT",
         "market_open": True,
         "otc": False,
         "interval": interval,
