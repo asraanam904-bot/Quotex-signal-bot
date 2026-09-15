@@ -362,26 +362,18 @@ def fetch_market_candles(symbol, interval, force_refresh=False):
 
 
 def choose_scan_pairs(interval):
-    """Choose only a small set of pairs for each newly closed candle.
+    """Automatically rotate market pairs for each newly closed candle.
 
-    The 5-minute mode is intentionally limited to two fresh pairs per candle
-    so the free Twelve Data quota is protected. Results are cached per closed
-    candle, so repeated page requests do not create another scan for the same
-    candle.
+    1-minute mode: one fresh pair per closed candle, rotating through all
+    configured pairs. 5-minute mode: two fresh pairs per closed candle.
+    The result is cached for that candle, so repeated browser requests do not
+    create duplicate scans.
     """
     _budget_reset_if_needed()
     now_bucket = int(time.time() // interval_seconds(interval))
 
-    if interval == "5min":
-        slots = 2
-    elif interval == "15min":
-        slots = 2
-    elif interval == "1h":
-        slots = 2
-    else:
-        slots = 1
-
-    start = (now_bucket * slots) % len(SCAN_PAIRS)
+    slots = 2 if interval == "5min" else 1
+    start = now_bucket % len(SCAN_PAIRS)
     return [SCAN_PAIRS[(start + i) % len(SCAN_PAIRS)] for i in range(slots)]
 
 
@@ -444,8 +436,8 @@ def scan():
     """One scan per newly closed candle; return at most ONE signal."""
     interval = request.args.get("interval", "5min")
 
-    # The trading workflow is intentionally fixed to 5-minute candles.
-    if interval != "5min":
+    # Only the two supported trading timeframes are exposed in the UI.
+    if interval not in ("1min", "5min"):
         interval = "5min"
 
     if not KEY:
@@ -468,7 +460,7 @@ def scan():
             "timezone": "UTC+05:30"
         })
 
-    # Current 5-minute bucket identifies the newly forming candle.
+    # Current candle bucket identifies the newly forming candle.
     # The latest fully closed candle is the previous bucket.
     candle_bucket = int(time.time() // interval_seconds(interval))
     cache_key = (interval, candle_bucket)
@@ -498,12 +490,12 @@ def scan():
                     "timeframe": interval,
                     "interval": interval,
                     "setup": setup,
-                    "reasons": reasons + ["Based on the latest fully CLOSED 5-minute candle"],
+                    "reasons": reasons + [f"Based on the latest fully CLOSED {interval} candle"],
                     "price": price,
                     "updated": time.time(),
                     "signal_time_ist": india_time_string(),
-                    "entry": "NEXT 5-MINUTE CANDLE",
-                    "expiry": "5 MINUTES",
+                    "entry": f"NEXT {interval.upper()} CANDLE",
+                    "expiry": "1 MINUTE" if interval == "1min" else "5 MINUTES",
                     "execution": "MANUAL_QUOTEX_ONLY",
                     "timezone": "UTC+05:30"
                 }
@@ -532,11 +524,11 @@ def scan():
     top_result = results[:1]
 
     if not top_result and not errors:
-        message = "No qualifying setup on this newly closed 5-minute candle."
+        message = f"No qualifying setup on this newly closed {interval} candle."
     elif not top_result and errors:
         message = "Fresh data was unavailable for this candle; no signal generated."
     else:
-        message = "One strongest signal selected for the NEXT 5-minute candle."
+        message = f"One strongest signal selected for the NEXT {interval} candle."
 
     response = {
         "market": "QUOTEX_LIVE_SIGNAL_ASSISTANT",
@@ -553,9 +545,9 @@ def scan():
         "current_time_ist": india_time_string(),
         "timezone": "UTC+05:30",
         "display_limit": 1,
-        "signal_basis": "LATEST FULLY CLOSED 5-MINUTE CANDLE",
-        "entry": "NEXT 5-MINUTE CANDLE",
-        "expiry": "5 MINUTES",
+        "signal_basis": f"LATEST FULLY CLOSED {interval} CANDLE",
+        "entry": f"NEXT {interval.upper()} CANDLE",
+        "expiry": "1 MINUTE" if interval == "1min" else "5 MINUTES",
         "one_signal_per_closed_candle": True,
         "candle_bucket": candle_bucket,
         "api_budget": {"local_calls_today": DAILY_CALLS, "local_daily_budget": DAILY_BUDGET},
