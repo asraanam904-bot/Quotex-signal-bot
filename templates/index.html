@@ -70,7 +70,8 @@ button{
 .nextscan{
   color:#cbd5e1;
   font-size:13px;
-  margin:4px 2px 12px
+  margin:4px 2px 12px;
+  line-height:1.6
 }
 
 .card{
@@ -210,6 +211,7 @@ Score is NOT a win probability.
 </div>
 
 </div>
+
 
 <script>
 
@@ -549,7 +551,10 @@ function nextCloseInfo(interval){
 }
 
 
-/* COUNTDOWN */
+/* =========================
+   EXACT NEXT SCAN TIME
+   + COUNTDOWN
+========================= */
 
 function updateAutoCountdown(){
 
@@ -576,18 +581,34 @@ function updateAutoCountdown(){
     .padStart(2,"0");
 
 
+  /* Exact IST time */
+
+  const nextTimeIST =
+    new Intl.DateTimeFormat("en-IN",{
+      timeZone:"Asia/Kolkata",
+      hour:"2-digit",
+      minute:"2-digit",
+      second:"2-digit",
+      hour12:true
+    }).format(new Date(info.next));
+
+
   if(secs===0){
 
-    el.textContent =
-      "🔔 Candle closed — scanning now...";
+    el.innerHTML =
+      "🔔 <b>Candle CLOSED</b> — scanning now..."
+      +"<br>📍 Next signal: <b>NEXT CANDLE</b>";
 
     return;
-
   }
 
 
-  el.textContent =
-    "⏳ Next auto-scan in "+
+  el.innerHTML =
+    "⏳ <b>Next auto-scan:</b> "+
+    nextTimeIST+
+    " IST"
+    +"<br>"
+    +"⏱️ <b>Starts in:</b> "+
     mm+":"+ss+
     " — after candle CLOSE";
 
