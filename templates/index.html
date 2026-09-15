@@ -67,6 +67,12 @@ button{
   margin:12px 2px
 }
 
+.nextscan{
+  color:#cbd5e1;
+  font-size:13px;
+  margin:4px 2px 12px
+}
+
 .card{
   background:#101827;
   border:1px solid #26344d;
@@ -122,6 +128,18 @@ ul{
   color:#dbe3f5
 }
 
+.statusrow{
+  padding:10px 0;
+  border-top:1px solid #26344d;
+  color:#dbe3f5;
+  font-size:13px;
+  line-height:1.5
+}
+
+.statusrow span{
+  color:#9eabc4
+}
+
 .warn{
   margin-top:18px;
   padding:12px;
@@ -151,107 +169,78 @@ Signal-only • 7-Pair Scanner •
 • UTC+05:30
 </div>
 
-
-<label for="interval">
-Timeframe
-</label>
+<label for="interval">Timeframe</label>
 
 <select id="interval">
-
-<option value="5min" selected>
-5 Minutes ⭐
-</option>
-
-<option value="1min">
-1 Minute
-</option>
-
-<option value="15min">
-15 Minutes
-</option>
-
-<option value="1h">
-1 Hour
-</option>
-
+<option value="5min" selected>5 Minutes ⭐</option>
+<option value="1min">1 Minute</option>
+<option value="15min">15 Minutes</option>
+<option value="1h">1 Hour</option>
 </select>
-
 
 <button onclick="scan()">
 🔎 SCAN QUOTEX LIVE MARKET
 </button>
 
+<div id="status">Ready to scan...</div>
 
-<div id="status">
-Ready to scan...
+<div id="nextscan" class="nextscan">
+⏳ Auto-scan: calculating…
 </div>
-
 
 <div id="signals"></div>
 
-
 <div class="warn">
 
-⚠️ Real-market FX data is scanned
-for manual use on Quotex.
+⚠️ Real-market FX data is scanned for manual use on Quotex.
 OTC is excluded.
 
 <br><br>
 
-Signal is generated only after a
-candle is fully CLOSED.
-
-A BUY/SELL signal is for the
-<b>NEXT candle</b>.
+Auto-scan happens automatically just after each candle has fully
+<b>CLOSED</b>. The signal is calculated from that closed candle and
+displayed for the <b>NEXT CANDLE</b>.
 
 <br><br>
 
-⚠️ Signal only — you place any
-Quotex trade manually.
-
+⚠️ Signal only — you place any Quotex trade manually.
 No automatic Quotex login/trading.
-
-<br><br>
-
-Setup score is NOT a win probability.
-No strategy can guarantee profit.
+Score is NOT a win probability.
 
 </div>
 
 </div>
-
 
 <script>
 
+/* =========================
+   INDIA TIME CLOCK
+========================= */
 
 function updateClock(){
 
   document.getElementById("ist").textContent =
-
     new Intl.DateTimeFormat("en-IN",{
-
       timeZone:"Asia/Kolkata",
-
       day:"2-digit",
       month:"2-digit",
       year:"numeric",
-
       hour:"2-digit",
       minute:"2-digit",
       second:"2-digit",
-
       hour12:true
-
     }).format(new Date());
 
 }
-
 
 updateClock();
 
 setInterval(updateClock,1000);
 
 
+/* =========================
+   MAIN SCAN
+========================= */
 
 async function scan(){
 
@@ -264,25 +253,23 @@ async function scan(){
   const box =
     document.getElementById("signals");
 
-
   status.textContent =
     "🔎 Scanning live-market pairs...";
 
-  box.innerHTML="";
-
+  box.innerHTML = "";
 
   try{
 
     const r =
       await fetch(
-        "/api/scan?interval="
-        + encodeURIComponent(interval)
+        "/api/scan?interval="+
+        encodeURIComponent(interval)
       );
 
+    const d = await r.json();
 
-    const d =
-      await r.json();
 
+    /* API ERROR */
 
     if(d.error){
 
@@ -290,19 +277,18 @@ async function scan(){
         "❌ "+d.error;
 
       return;
-
     }
 
 
+    /* MARKET CLOSED */
 
     if(d.market_open===false){
 
       status.textContent =
-        "🔴 REAL MARKET CLOSED • "
-        +(d.current_time_ist||"");
+        "🔴 REAL MARKET CLOSED • "+
+        (d.current_time_ist||"");
 
-
-      box.innerHTML=`
+      box.innerHTML = `
 
         <div class="card closed">
 
@@ -326,136 +312,190 @@ async function scan(){
       `;
 
       return;
-
     }
 
 
+    /* MARKET OPEN */
 
     status.textContent =
-      "🟢 LIVE MARKET OPEN • Scanned "
-      +(d.scanned_pairs ?
-         d.scanned_pairs.length : 0)
-      +" pairs • "
-      +(d.current_time_ist||"");
+      "🟢 LIVE MARKET OPEN • Scanned "+
+      d.scanned_pairs.length+
+      " pairs • "+
+      (d.current_time_ist||"");
 
 
+    /* NO SIGNAL */
 
-    if(!d.signals ||
-       d.signals.length===0){
+    if(!d.signals || d.signals.length===0){
 
-      box.innerHTML=`
+      box.innerHTML = `
 
         <div class="card">
 
-          ⚪
-          <b>No qualifying setup right now.</b>
+          ⚪ <b>
+          No qualifying setup right now.
+          </b>
 
           <br><br>
 
           Real market is open,
           but no clean setup was found.
 
+          <br><br>
+
+          7 pairs were scanned.
+
         </div>
 
       `;
-
-      return;
 
     }
 
 
+    /* SIGNAL CARDS */
 
-    d.signals.forEach(x=>{
+    if(d.signals){
 
+      d.signals.forEach(x=>{
 
-      const cls =
-        x.signal==="BUY"
-        ? "buy"
-        : "sell";
+        const cls =
+          x.signal==="BUY"
+          ? "buy"
+          : "sell";
 
-
-      const reasons =
-        (x.reasons||[])
-        .map(z=>"<li>"+z+"</li>")
-        .join("");
-
-
-      box.innerHTML+=`
-
-        <div class="card ${cls}">
+        const reasons =
+          (x.reasons||[])
+          .map(z=>"<li>"+z+"</li>")
+          .join("");
 
 
-          <div class="signal">
+        box.innerHTML += `
 
-            ${x.signal==="BUY"
-              ?"🟢 BUY"
-              :"🔴 SELL"}
+          <div class="card ${cls}">
 
-            — ${x.symbol}
+            <div class="signal">
+
+              ${
+                x.signal==="BUY"
+                ? "🟢 BUY"
+                : "🔴 SELL"
+              }
+
+              — ${x.symbol}
+
+            </div>
+
+
+            <div class="score">
+
+              ⭐ Setup Score:
+              ${x.score}/100
+
+            </div>
+
+
+            <div class="info">
+
+              ⏱️ Timeframe:
+              <b>${x.interval||interval}</b>
+
+              <br>
+
+              🎯 Setup:
+              <b>${x.setup}</b>
+
+              <br>
+
+              👉 Entry:
+              <b>NEXT CANDLE</b>
+
+              <br>
+
+              💰 Price:
+              <b>${x.price}</b>
+
+              <br>
+
+              🇮🇳 Signal time:
+              <b>
+                ${x.signal_time_ist||"—"} IST
+              </b>
+
+            </div>
+
+
+            <ul>
+              ${reasons}
+            </ul>
 
           </div>
 
+        `;
+
+      });
+
+    }
 
 
-          <div class="score">
+    /* =========================
+       7 PAIR DETAILS
+    ========================= */
 
-            ⭐ Setup Score:
-            ${x.score}/100
+    const rows =
+      (d.pair_status||[])
+      .map(p=>{
+
+        const reason =
+          (p.reasons||[]).join(" • ");
+
+        const badge =
+          p.signal==="BUY"
+          ? "🟢 BUY"
+          : (
+              p.signal==="SELL"
+              ? "🔴 SELL"
+              : "⚪ NO TRADE"
+            );
+
+
+        return `
+
+          <div class="statusrow">
+
+            <b>${p.symbol}</b>
+            — ${badge}
+
+            <br>
+
+            <span>
+              ${
+                reason ||
+                "No qualifying setup"
+              }
+            </span>
 
           </div>
 
+        `;
+
+      })
+      .join("");
 
 
-          <div class="info">
+    box.innerHTML += `
 
-            ⏱️ Timeframe:
-            <b>${x.interval||interval}</b>
+      <div class="card">
 
-            <br>
+        <b>🔍 7-Pair Scan Details</b>
 
+        ${rows}
 
-            🎯 Setup:
-            <b>${x.setup}</b>
+      </div>
 
-            <br>
-
-
-            👉 Entry:
-            <b>NEXT CANDLE</b>
-
-            <br>
+    `;
 
 
-            💰 Price:
-            <b>${x.price}</b>
-
-            <br>
-
-
-            🇮🇳 Signal time:
-            <b>
-              ${x.signal_time_ist||"—"} IST
-            </b>
-
-          </div>
-
-
-
-          <ul>
-            ${reasons}
-          </ul>
-
-
-        </div>
-
-      `;
-
-    });
-
-
-  }
-
-  catch(e){
+  }catch(e){
 
     status.textContent =
       "❌ Scan error: "+e.message;
@@ -465,11 +505,192 @@ async function scan(){
 }
 
 
+/* =========================
+   AUTO SCAN TIMER
+========================= */
+
+let lastAutoCycle = "";
+
+let scanBusy = false;
+
+
+/* TIMEFRAME MILLISECONDS */
+
+function intervalMs(interval){
+
+  return ({
+    "1min":60000,
+    "5min":300000,
+    "15min":900000,
+    "1h":3600000
+  })[interval] || 300000;
+
+}
+
+
+/* NEXT CANDLE CLOSE */
+
+function nextCloseInfo(interval){
+
+  const ms =
+    intervalMs(interval);
+
+  const now =
+    Date.now();
+
+  const next =
+    Math.ceil(now/ms)*ms;
+
+  return {
+    next:next,
+    remaining:next-now
+  };
+
+}
+
+
+/* COUNTDOWN */
+
+function updateAutoCountdown(){
+
+  const interval =
+    document.getElementById("interval").value;
+
+  const el =
+    document.getElementById("nextscan");
+
+  const info =
+    nextCloseInfo(interval);
+
+  const secs =
+    Math.max(
+      0,
+      Math.ceil(info.remaining/1000)
+    );
+
+  const mm =
+    Math.floor(secs/60);
+
+  const ss =
+    String(secs%60)
+    .padStart(2,"0");
+
+
+  if(secs===0){
+
+    el.textContent =
+      "🔔 Candle closed — scanning now...";
+
+    return;
+
+  }
+
+
+  el.textContent =
+    "⏳ Next auto-scan in "+
+    mm+":"+ss+
+    " — after candle CLOSE";
+
+}
+
+
+/* =========================
+   AUTOMATIC POST-CLOSE SCAN
+========================= */
+
+function scheduleAutoScan(){
+
+  const interval =
+    document.getElementById("interval").value;
+
+  const info =
+    nextCloseInfo(interval);
+
+  const cycle =
+    new Date(info.next).toISOString();
+
+
+  if(info.remaining<=0){
+
+    if(
+      cycle!==lastAutoCycle &&
+      !scanBusy
+    ){
+
+      lastAutoCycle =
+        cycle;
+
+      setTimeout(
+        ()=>scan(true),
+        1500
+      );
+
+    }
+
+    return;
+
+  }
+
+
+  if(
+    cycle!==lastAutoCycle &&
+    info.remaining<=1500 &&
+    !scanBusy
+  ){
+
+    lastAutoCycle =
+      cycle;
+
+    setTimeout(
+      ()=>scan(true),
+      1500
+    );
+
+  }
+
+}
+
+
+/* =========================
+   TIMEFRAME CHANGE
+========================= */
+
+document
+.getElementById("interval")
+.addEventListener(
+  "change",
+  ()=>{
+
+    lastAutoCycle="";
+
+    updateAutoCountdown();
+
+    scan();
+
+  }
+);
+
+
+/* =========================
+   START
+========================= */
 
 scan();
 
-setInterval(scan,60000);
+updateAutoCountdown();
 
+scheduleAutoScan();
+
+
+/* CHECK EVERY SECOND */
+
+setInterval(
+  ()=>{
+    updateAutoCountdown();
+    scheduleAutoScan();
+  },
+  1000
+);
 
 </script>
 
