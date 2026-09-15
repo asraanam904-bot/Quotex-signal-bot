@@ -9,8 +9,6 @@ app = Flask(__name__)
 
 KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 TV_TOKEN = os.getenv("TV_WEBHOOK_TOKEN", "CHANGE_ME")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 latest = {
     "signal": "NO TRADE",
@@ -285,42 +283,6 @@ def fetch_market_candles(symbol, interval):
 
 
 
-def send_telegram(symbol, interval, signal, score, setup, reasons, price):
-    global last_alert
-
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-
-    key = f"{symbol}|{interval}|{signal}|{setup}|{price}"
-    if key == last_alert:
-        return False
-
-    text = (
-        f"ð SIGNAL BOT\n\n"
-        f"{signal} â {symbol}\n"
-        f"Timeframe: {interval}\n"
-        f"Setup: {setup}\n"
-        f"Score: {score}/100\n"
-        f"Price: {price}\n\n"
-        f"â¢ " + "\nâ¢ ".join(reasons) +
-        "\n\nâ ï¸ Signal only â not a guaranteed win."
-    )
-
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        r = requests.post(
-            url,
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
-            timeout=8
-        )
-        if r.ok:
-            last_alert = key
-            return True
-    except Exception:
-        pass
-    return False
-
-
 @app.get("/")
 def home():
     return render_template("index.html")
@@ -368,9 +330,6 @@ def live():
             "timezone": "UTC+05:30"
         }
 
-        if signal in ("BUY", "SELL"):
-            send_telegram(symbol, interval, signal, score, setup, reasons, price)
-
         return jsonify(latest)
 
     except Exception as e:
@@ -379,7 +338,7 @@ def live():
 
 @app.get("/api/scan")
 def scan():
-    """Scan real-market FX pairs for manual use on Quotex; never scan OTC."""
+    """Scan all 7 real-market FX pairs; return max 2 signals plus reasons for every pair."""
     interval = request.args.get("interval", "5min")
 
     if not KEY:
@@ -393,6 +352,7 @@ def scan():
             "interval": interval,
             "scanned_pairs": SCAN_PAIRS,
             "signals": [],
+            "pair_status": [],
             "errors": [],
             "count": 0,
             "message": "REAL MARKET CLOSED â NO SIGNALS",
@@ -402,6 +362,7 @@ def scan():
         })
 
     results = []
+    pair_status = []
     errors = []
 
     for symbol in SCAN_PAIRS:
@@ -427,14 +388,26 @@ def scan():
                     "timezone": "UTC+05:30"
                 }
                 results.append(result)
-                send_telegram(
-                    symbol, interval, signal, score, setup, reasons, price
-                )
+                pair_status.append({
+                    "symbol": symbol, "signal": signal, "score": score,
+                    "setup": setup, "reasons": result["reasons"]
+                })
+            else:
+                pair_status.append({
+                    "symbol": symbol, "signal": "NO TRADE", "score": 0,
+                    "setup": setup, "reasons": reasons
+                })
 
         except Exception as e:
-            errors.append({"symbol": symbol, "error": str(e)})
+            msg = str(e)
+            errors.append({"symbol": symbol, "error": msg})
+            pair_status.append({
+                "symbol": symbol, "signal": "DATA ERROR", "score": 0,
+                "setup": "Unavailable", "reasons": [msg]
+            })
 
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    top_results = results[:2]
 
     return jsonify({
         "market": "QUOTEX_LIVE_SIGNAL_ASSISTANT",
@@ -442,11 +415,16 @@ def scan():
         "otc": False,
         "interval": interval,
         "scanned_pairs": SCAN_PAIRS,
-        "signals": results,
+        "signals": top_results,
+        "all_signal_count": len(results),
+        "pair_status": pair_status,
         "errors": errors,
-        "count": len(results),
+        "count": len(top_results),
         "current_time_ist": india_time_string(),
-        "timezone": "UTC+05:30"
+        "timezone": "UTC+05:30",
+        "display_limit": 2,
+        "signal_basis": "LATEST FULLY CLOSED CANDLE",
+        "entry": "NEXT CANDLE"
     })
 
 
