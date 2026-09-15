@@ -32,6 +32,7 @@ DAILY_CALLS_DATE = ""
 # Keep the free 800/day plan below its daily limit. These limits are deliberately
 # conservative and leave headroom for occasional manual /api/live requests.
 DAILY_BUDGET = 700
+SCAN_RESULT_CACHE = {}
 
 REFRESH_EVERY = {
     "1min": 14 * 60,   # one pair refresh roughly every 14 min
@@ -361,26 +362,24 @@ def fetch_market_candles(symbol, interval, force_refresh=False):
 
 
 def choose_scan_pairs(interval):
-    """Rotate a small subset of pairs so the free plan is not exhausted."""
+    """Choose only a small set of pairs for each newly closed candle.
+
+    The 5-minute mode is intentionally limited to two fresh pairs per candle
+    so the free Twelve Data quota is protected. Results are cached per closed
+    candle, so repeated page requests do not create another scan for the same
+    candle.
+    """
     _budget_reset_if_needed()
     now_bucket = int(time.time() // interval_seconds(interval))
 
-    # Number of symbols per auto scan. 5min -> 2 symbols = about 576 requests/day.
-    # 1min -> 1 symbol = about 1440 requests/day, so cap it to every other bucket.
-    if interval == "1min":
-        if now_bucket % 2:
-            slots = 0
-        else:
-            slots = 1
-    elif interval == "5min":
+    if interval == "5min":
         slots = 2
     elif interval == "15min":
         slots = 2
-    else:
+    elif interval == "1h":
         slots = 2
-
-    if slots <= 0:
-        return []
+    else:
+        slots = 1
 
     start = (now_bucket * slots) % len(SCAN_PAIRS)
     return [SCAN_PAIRS[(start + i) % len(SCAN_PAIRS)] for i in range(slots)]
@@ -442,8 +441,12 @@ def live():
 
 @app.get("/api/scan")
 def scan():
-    """Scan all 7 real-market FX pairs; return max 2 signals plus reasons for every pair."""
+    """One scan per newly closed candle; return at most ONE signal."""
     interval = request.args.get("interval", "5min")
+
+    # The trading workflow is intentionally fixed to 5-minute candles.
+    if interval != "5min":
+        interval = "5min"
 
     if not KEY:
         return jsonify({"error": "API key missing. Add TWELVE_DATA_API_KEY to Render Environment."})
@@ -465,33 +468,29 @@ def scan():
             "timezone": "UTC+05:30"
         })
 
+    # Current 5-minute bucket identifies the newly forming candle.
+    # The latest fully closed candle is the previous bucket.
+    candle_bucket = int(time.time() // interval_seconds(interval))
+    cache_key = (interval, candle_bucket)
+    cached_result = SCAN_RESULT_CACHE.get(cache_key)
+    if cached_result is not None:
+        return jsonify(cached_result)
+
+    active_pairs = choose_scan_pairs(interval)
     results = []
     pair_status = []
     errors = []
 
-    active_pairs = choose_scan_pairs(interval)
-
-    for symbol in SCAN_PAIRS:
+    # IMPORTANT: only the active pairs get fresh data. We do not use older
+    # cached candles as a new signal because the user requested one signal
+    # based on each newly closed 5-minute candle.
+    for symbol in active_pairs:
         try:
-            if symbol not in active_pairs:
-                cached, age = _cached_candles(symbol, interval)
-                if cached is not None:
-                    candles = cached
-                    cache_note = f"Using cached candles ({int(age)}s old) to save API credits"
-                else:
-                    pair_status.append({
-                        "symbol": symbol, "signal": "WAIT", "score": 0,
-                        "setup": "Waiting for refresh slot",
-                        "reasons": ["Pair is rotated into the scanner to protect the free API quota", "No fresh request was made for this pair on this scan"]
-                    })
-                    continue
-            else:
-                candles = fetch_market_candles(symbol, interval)
-                cache_note = "Fresh market candles fetched"
+            candles = fetch_market_candles(symbol, interval, force_refresh=True)
             signal, score, setup, reasons = analyze(candles)
+            price = candles[-1]["close"]
 
             if signal in ("BUY", "SELL"):
-                price = candles[-1]["close"]
                 result = {
                     "signal": signal,
                     "score": score,
@@ -499,11 +498,12 @@ def scan():
                     "timeframe": interval,
                     "interval": interval,
                     "setup": setup,
-                    "reasons": reasons + ["Based on the latest CLOSED candle", cache_note],
+                    "reasons": reasons + ["Based on the latest fully CLOSED 5-minute candle"],
                     "price": price,
                     "updated": time.time(),
                     "signal_time_ist": india_time_string(),
-                    "entry": "NEXT CANDLE",
+                    "entry": "NEXT 5-MINUTE CANDLE",
+                    "expiry": "5 MINUTES",
                     "execution": "MANUAL_QUOTEX_ONLY",
                     "timezone": "UTC+05:30"
                 }
@@ -515,7 +515,7 @@ def scan():
             else:
                 pair_status.append({
                     "symbol": symbol, "signal": "NO TRADE", "score": 0,
-                    "setup": setup, "reasons": reasons + [cache_note]
+                    "setup": setup, "reasons": reasons
                 })
 
         except Exception as e:
@@ -526,29 +526,52 @@ def scan():
                 "setup": "Unavailable", "reasons": [msg]
             })
 
+    # One signal maximum for each newly closed candle. If two active pairs
+    # qualify, choose the stronger setup.
     results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    top_results = results[:2]
+    top_result = results[:1]
 
-    return jsonify({
+    if not top_result and not errors:
+        message = "No qualifying setup on this newly closed 5-minute candle."
+    elif not top_result and errors:
+        message = "Fresh data was unavailable for this candle; no signal generated."
+    else:
+        message = "One strongest signal selected for the NEXT 5-minute candle."
+
+    response = {
         "market": "QUOTEX_LIVE_SIGNAL_ASSISTANT",
         "market_open": True,
         "otc": False,
         "interval": interval,
-        "scanned_pairs": SCAN_PAIRS,
+        "scanned_pairs": active_pairs,
         "active_pairs_this_scan": active_pairs,
-        "signals": top_results,
+        "signals": top_result,
         "all_signal_count": len(results),
         "pair_status": pair_status,
         "errors": errors,
-        "count": len(top_results),
+        "count": len(top_result),
         "current_time_ist": india_time_string(),
         "timezone": "UTC+05:30",
-        "display_limit": 2,
-        "signal_basis": "LATEST FULLY CLOSED CANDLE",
-        "entry": "NEXT CANDLE",
+        "display_limit": 1,
+        "signal_basis": "LATEST FULLY CLOSED 5-MINUTE CANDLE",
+        "entry": "NEXT 5-MINUTE CANDLE",
+        "expiry": "5 MINUTES",
+        "one_signal_per_closed_candle": True,
+        "candle_bucket": candle_bucket,
         "api_budget": {"local_calls_today": DAILY_CALLS, "local_daily_budget": DAILY_BUDGET},
-        "note": "Pairs are rotated/cached to protect the Twelve Data free-plan daily quota."
-    })
+        "note": "Only fresh pairs are used for the new candle; repeated requests for the same candle are served from cache.",
+        "message": message
+    }
+
+    SCAN_RESULT_CACHE[cache_key] = response
+
+    # Keep memory bounded.
+    if len(SCAN_RESULT_CACHE) > 100:
+        oldest = sorted(SCAN_RESULT_CACHE, key=lambda k: k[1])[:-50]
+        for k in oldest:
+            SCAN_RESULT_CACHE.pop(k, None)
+
+    return jsonify(response)
 
 
 @app.post("/api/tradingview")
