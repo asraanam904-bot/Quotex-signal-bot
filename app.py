@@ -21,6 +21,57 @@ latest = {
 }
 last_alert = ""
 
+# Free-plan friendly market-data cache/budget.
+# Twelve Data /time_series costs 1 credit per symbol; batching reduces HTTP
+# overhead but does NOT reduce symbol credits. We therefore rotate pairs and
+# cache each pair until its next refresh window.
+CANDLE_CACHE = {}
+DAILY_CALLS = 0
+DAILY_CALLS_DATE = ""
+
+# Keep the free 800/day plan below its daily limit. These limits are deliberately
+# conservative and leave headroom for occasional manual /api/live requests.
+DAILY_BUDGET = 700
+
+REFRESH_EVERY = {
+    "1min": 14 * 60,   # one pair refresh roughly every 14 min
+    "5min": 20 * 60,   # each pair refreshed roughly every 20 min
+    "15min": 60 * 60,  # each pair refreshed roughly every hour
+    "1h": 4 * 60 * 60
+}
+
+def _budget_reset_if_needed():
+    global DAILY_CALLS, DAILY_CALLS_DATE
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if DAILY_CALLS_DATE != today:
+        DAILY_CALLS_DATE = today
+        DAILY_CALLS = 0
+
+def _cache_key(symbol, interval):
+    return (symbol, interval)
+
+def _cached_candles(symbol, interval):
+    item = CANDLE_CACHE.get(_cache_key(symbol, interval))
+    if not item:
+        return None, None
+    age = time.time() - item["fetched_at"]
+    ttl = REFRESH_EVERY.get(interval, 20 * 60)
+    if age <= ttl:
+        return item["candles"], age
+    return None, age
+
+def _refresh_allowed():
+    _budget_reset_if_needed()
+    return DAILY_CALLS < DAILY_BUDGET
+
+def _credit_safe_error():
+    _budget_reset_if_needed()
+    return (
+        f"Daily data-request safety limit reached ({DAILY_CALLS}/{DAILY_BUDGET}). "
+        "Cached data will be used until the next UTC day. "
+        "This protects the Twelve Data free 800/day quota."
+    )
+
 
 def f(v):
     return float(v)
@@ -260,8 +311,24 @@ def completed_candles(values, interval):
     return [{k: v for k, v in x.items() if k != "_dt"} for x in completed]
 
 
-def fetch_market_candles(symbol, interval):
-    """Fetch UTC candles from Twelve Data and return only closed candles."""
+def fetch_market_candles(symbol, interval, force_refresh=False):
+    """Return fresh-enough closed candles while protecting the daily API quota."""
+    global DAILY_CALLS
+
+    _budget_reset_if_needed()
+
+    cached, age = _cached_candles(symbol, interval)
+    if cached is not None and not force_refresh:
+        return cached
+
+    if not _refresh_allowed():
+        # A stale cache is better than spending beyond the free-plan budget, but
+        # only return it if it still has enough candles to analyze.
+        item = CANDLE_CACHE.get(_cache_key(symbol, interval))
+        if item and len(item["candles"]) >= 40:
+            return item["candles"]
+        raise RuntimeError(_credit_safe_error())
+
     url = "https://api.twelvedata.com/time_series"
     params = {
         "symbol": symbol,
@@ -270,7 +337,13 @@ def fetch_market_candles(symbol, interval):
         "timezone": "UTC",
         "apikey": KEY
     }
-    data = requests.get(url, params=params, timeout=10).json()
+
+    response = requests.get(url, params=params, timeout=10)
+    data = response.json()
+
+    # Count attempted data calls locally so repeated automatic scans cannot
+    # burn through the free daily allowance.
+    DAILY_CALLS += 1
 
     if "values" not in data:
         raise RuntimeError(data.get("message", "Data unavailable"))
@@ -279,7 +352,38 @@ def fetch_market_candles(symbol, interval):
     if len(candles) < 40:
         raise RuntimeError("Waiting for enough fresh, closed candles")
 
+    CANDLE_CACHE[_cache_key(symbol, interval)] = {
+        "candles": candles,
+        "fetched_at": time.time()
+    }
+
     return candles
+
+
+def choose_scan_pairs(interval):
+    """Rotate a small subset of pairs so the free plan is not exhausted."""
+    _budget_reset_if_needed()
+    now_bucket = int(time.time() // interval_seconds(interval))
+
+    # Number of symbols per auto scan. 5min -> 2 symbols = about 576 requests/day.
+    # 1min -> 1 symbol = about 1440 requests/day, so cap it to every other bucket.
+    if interval == "1min":
+        if now_bucket % 2:
+            slots = 0
+        else:
+            slots = 1
+    elif interval == "5min":
+        slots = 2
+    elif interval == "15min":
+        slots = 2
+    else:
+        slots = 2
+
+    if slots <= 0:
+        return []
+
+    start = (now_bucket * slots) % len(SCAN_PAIRS)
+    return [SCAN_PAIRS[(start + i) % len(SCAN_PAIRS)] for i in range(slots)]
 
 
 
@@ -365,9 +469,25 @@ def scan():
     pair_status = []
     errors = []
 
+    active_pairs = choose_scan_pairs(interval)
+
     for symbol in SCAN_PAIRS:
         try:
-            candles = fetch_market_candles(symbol, interval)
+            if symbol not in active_pairs:
+                cached, age = _cached_candles(symbol, interval)
+                if cached is not None:
+                    candles = cached
+                    cache_note = f"Using cached candles ({int(age)}s old) to save API credits"
+                else:
+                    pair_status.append({
+                        "symbol": symbol, "signal": "WAIT", "score": 0,
+                        "setup": "Waiting for refresh slot",
+                        "reasons": ["Pair is rotated into the scanner to protect the free API quota", "No fresh request was made for this pair on this scan"]
+                    })
+                    continue
+            else:
+                candles = fetch_market_candles(symbol, interval)
+                cache_note = "Fresh market candles fetched"
             signal, score, setup, reasons = analyze(candles)
 
             if signal in ("BUY", "SELL"):
@@ -379,7 +499,7 @@ def scan():
                     "timeframe": interval,
                     "interval": interval,
                     "setup": setup,
-                    "reasons": reasons + ["Based on the latest CLOSED candle"],
+                    "reasons": reasons + ["Based on the latest CLOSED candle", cache_note],
                     "price": price,
                     "updated": time.time(),
                     "signal_time_ist": india_time_string(),
@@ -395,7 +515,7 @@ def scan():
             else:
                 pair_status.append({
                     "symbol": symbol, "signal": "NO TRADE", "score": 0,
-                    "setup": setup, "reasons": reasons
+                    "setup": setup, "reasons": reasons + [cache_note]
                 })
 
         except Exception as e:
@@ -415,6 +535,7 @@ def scan():
         "otc": False,
         "interval": interval,
         "scanned_pairs": SCAN_PAIRS,
+        "active_pairs_this_scan": active_pairs,
         "signals": top_results,
         "all_signal_count": len(results),
         "pair_status": pair_status,
@@ -424,7 +545,9 @@ def scan():
         "timezone": "UTC+05:30",
         "display_limit": 2,
         "signal_basis": "LATEST FULLY CLOSED CANDLE",
-        "entry": "NEXT CANDLE"
+        "entry": "NEXT CANDLE",
+        "api_budget": {"local_calls_today": DAILY_CALLS, "local_daily_budget": DAILY_BUDGET},
+        "note": "Pairs are rotated/cached to protect the Twelve Data free-plan daily quota."
     })
 
 
