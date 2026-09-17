@@ -93,6 +93,119 @@ def near(a, b, distance):
     return abs(a - b) <= distance
 
 
+
+def _candle_parts(x):
+    o = f(x["open"]); h = f(x["high"]); l = f(x["low"]); cl = f(x["close"])
+    body = abs(cl - o)
+    rng = max(h - l, 1e-9)
+    return o, h, l, cl, body, rng
+
+
+def _is_doji(x, threshold=0.10):
+    """Doji filter used only by the added BC/SC breakout pattern."""
+    _, h, l, cl, body, rng = _candle_parts(x)
+    return body / rng <= threshold
+
+
+def special_breakout_pattern(c):
+    """Exact BC/SC -> immediate breakout -> 2 opposite candles pattern.
+
+    This is an ADDITION to the existing signal engine; existing S/R, trap,
+    fake-breakout, candle-structure and momentum logic is left unchanged.
+
+    BUY:  Big Green -> Small Red -> immediate combined-HIGH break -> Red -> Red
+           -> BUY on the next candle.
+    SELL: Big Red -> Small Green -> immediate combined-LOW break -> Green -> Green
+           -> SELL on the next candle.
+
+    The five fully-closed candles immediately before the prospective entry are
+    the five relevant candles. If any of them is a doji, the pattern is invalid.
+    """
+    if len(c) < 45:
+        return None
+
+    # Last five CLOSED candles are the complete setup before the next entry.
+    big = c[-5]
+    small = c[-4]
+    breakout = c[-3]
+    confirm1 = c[-2]
+    confirm2 = c[-1]
+
+    relevant = [big, small, breakout, confirm1, confirm2]
+    if any(_is_doji(x) for x in relevant):
+        return None
+
+    bo, bh, bl, bc, bbody, brange = _candle_parts(big)
+    so, sh, sl, sc, sbody, srange = _candle_parts(small)
+    xo, xh, xl, xc, xbody, xrange = _candle_parts(breakout)
+    c1o, c1h, c1l, c1c, c1body, c1range = _candle_parts(confirm1)
+    c2o, c2h, c2l, c2c, c2body, c2range = _candle_parts(confirm2)
+
+    # "Big" and "Small" are judged visually from this two-candle pair:
+    # the first candle body must be clearly larger than the second. A 2:1
+    # body ratio avoids treating nearly-equal candles as the pictured pattern.
+    big_is_clearly_bigger = bbody >= max(sbody * 2.0, 1e-12)
+    # "Not engulfing" refers to the small candle body staying inside the
+    # big candle body; wick excursions are allowed as in the reference image.
+    big_body_low, big_body_high = sorted((bo, bc))
+    small_body_low, small_body_high = sorted((so, sc))
+    small_is_not_engulfing = (
+        small_body_low >= big_body_low and
+        small_body_high <= big_body_high
+    )
+
+    buy = (
+        bc > bo and                         # Big Green
+        sc < so and                         # Small Red
+        big_is_clearly_bigger and
+        small_is_not_engulfing and
+        xh > max(bh, sh) and                # immediate HIGH breakout
+        c1c < c1o and                       # next candle Red
+        c2c < c2o                           # following candle Red
+    )
+
+    # SELL is the exact inverse.
+    big_red = bc < bo
+    small_green = sc > so
+    small_is_not_engulfing_sell = (
+        small_body_low >= big_body_low and
+        small_body_high <= big_body_high
+    )
+
+    sell = (
+        big_red and
+        small_green and
+        big_is_clearly_bigger and
+        small_is_not_engulfing_sell and
+        xl < min(bl, sl) and                # immediate LOW breakout
+        c1c > c1o and                       # next candle Green
+        c2c > c2o                           # following candle Green
+    )
+
+    if buy and not sell:
+        return (
+            "BUY", 100, "BC/SC immediate-high-break pattern",
+            [
+                "Big Green â Small Red",
+                "Immediate combined HIGH breakout",
+                "Exactly 2 consecutive Red candles after breakout",
+                "No Doji in the 5 relevant candles"
+            ]
+        )
+
+    if sell and not buy:
+        return (
+            "SELL", 100, "BC/SC immediate-low-break pattern",
+            [
+                "Big Red â Small Green",
+                "Immediate combined LOW breakout",
+                "Exactly 2 consecutive Green candles after breakout",
+                "No Doji in the 5 relevant candles"
+            ]
+        )
+
+    return None
+
 def analyze(c):
     if len(c) < 40:
         return "NO TRADE", 0, "Waiting", ["Not enough candles"]
@@ -186,6 +299,12 @@ def analyze(c):
     # Any one clean setup can trigger a directional signal.
     # Priority: trap/fake-breakout -> S/R reaction -> candle structure -> price action.
     candidates = []
+
+    # ADDED: user-defined BC/SC immediate-breakout pattern.
+    # Existing signal rules below remain intact.
+    special = special_breakout_pattern(c)
+    if special:
+        candidates.append(special)
 
     if trap_buy:
         candidates.append(("BUY", 95, "Trap / failed-break reversal", ["Failed downside break", "Bullish reversal"]))
