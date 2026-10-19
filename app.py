@@ -93,120 +93,7 @@ def near(a, b, distance):
     return abs(a - b) <= distance
 
 
-
-def _candle_parts(x):
-    o = f(x["open"]); h = f(x["high"]); l = f(x["low"]); cl = f(x["close"])
-    body = abs(cl - o)
-    rng = max(h - l, 1e-9)
-    return o, h, l, cl, body, rng
-
-
-def _is_doji(x, threshold=0.10):
-    """Doji filter used only by the added BC/SC breakout pattern."""
-    _, h, l, cl, body, rng = _candle_parts(x)
-    return body / rng <= threshold
-
-
-def special_breakout_pattern(c):
-    """Exact BC/SC -> immediate breakout -> 2 opposite candles pattern.
-
-    This is an ADDITION to the existing signal engine; existing S/R, trap,
-    fake-breakout, candle-structure and momentum logic is left unchanged.
-
-    BUY:  Big Green -> Small Red -> immediate combined-HIGH break -> Red -> Red
-           -> BUY on the next candle.
-    SELL: Big Red -> Small Green -> immediate combined-LOW break -> Green -> Green
-           -> SELL on the next candle.
-
-    The five fully-closed candles immediately before the prospective entry are
-    the five relevant candles. If any of them is a doji, the pattern is invalid.
-    """
-    if len(c) < 45:
-        return None
-
-    # Last five CLOSED candles are the complete setup before the next entry.
-    big = c[-5]
-    small = c[-4]
-    breakout = c[-3]
-    confirm1 = c[-2]
-    confirm2 = c[-1]
-
-    relevant = [big, small, breakout, confirm1, confirm2]
-    if any(_is_doji(x) for x in relevant):
-        return None
-
-    bo, bh, bl, bc, bbody, brange = _candle_parts(big)
-    so, sh, sl, sc, sbody, srange = _candle_parts(small)
-    xo, xh, xl, xc, xbody, xrange = _candle_parts(breakout)
-    c1o, c1h, c1l, c1c, c1body, c1range = _candle_parts(confirm1)
-    c2o, c2h, c2l, c2c, c2body, c2range = _candle_parts(confirm2)
-
-    # "Big" and "Small" are judged visually from this two-candle pair:
-    # the first candle body must be clearly larger than the second. A 2:1
-    # body ratio avoids treating nearly-equal candles as the pictured pattern.
-    big_is_clearly_bigger = bbody >= max(sbody * 2.0, 1e-12)
-    # "Not engulfing" refers to the small candle body staying inside the
-    # big candle body; wick excursions are allowed as in the reference image.
-    big_body_low, big_body_high = sorted((bo, bc))
-    small_body_low, small_body_high = sorted((so, sc))
-    small_is_not_engulfing = (
-        small_body_low >= big_body_low and
-        small_body_high <= big_body_high
-    )
-
-    buy = (
-        bc > bo and                         # Big Green
-        sc < so and                         # Small Red
-        big_is_clearly_bigger and
-        small_is_not_engulfing and
-        xh > max(bh, sh) and                # immediate HIGH breakout
-        c1c < c1o and                       # next candle Red
-        c2c < c2o                           # following candle Red
-    )
-
-    # SELL is the exact inverse.
-    big_red = bc < bo
-    small_green = sc > so
-    small_is_not_engulfing_sell = (
-        small_body_low >= big_body_low and
-        small_body_high <= big_body_high
-    )
-
-    sell = (
-        big_red and
-        small_green and
-        big_is_clearly_bigger and
-        small_is_not_engulfing_sell and
-        xl < min(bl, sl) and                # immediate LOW breakout
-        c1c > c1o and                       # next candle Green
-        c2c > c2o                           # following candle Green
-    )
-
-    if buy and not sell:
-        return (
-            "BUY", 100, "BC/SC immediate-high-break pattern",
-            [
-                "Big Green â Small Red",
-                "Immediate combined HIGH breakout",
-                "Exactly 2 consecutive Red candles after breakout",
-                "No Doji in the 5 relevant candles"
-            ]
-        )
-
-    if sell and not buy:
-        return (
-            "SELL", 100, "BC/SC immediate-low-break pattern",
-            [
-                "Big Red â Small Green",
-                "Immediate combined LOW breakout",
-                "Exactly 2 consecutive Green candles after breakout",
-                "No Doji in the 5 relevant candles"
-            ]
-        )
-
-    return None
-
-def analyze(c):
+def analyze_existing(c):
     if len(c) < 40:
         return "NO TRADE", 0, "Waiting", ["Not enough candles"]
 
@@ -300,12 +187,6 @@ def analyze(c):
     # Priority: trap/fake-breakout -> S/R reaction -> candle structure -> price action.
     candidates = []
 
-    # ADDED: user-defined BC/SC immediate-breakout pattern.
-    # Existing signal rules below remain intact.
-    special = special_breakout_pattern(c)
-    if special:
-        candidates.append(special)
-
     if trap_buy:
         candidates.append(("BUY", 95, "Trap / failed-break reversal", ["Failed downside break", "Bullish reversal"]))
     if trap_sell:
@@ -354,6 +235,141 @@ def analyze(c):
     reasons.append("No qualifying setup on current candle")
     return "NO TRADE", 0, "Waiting", reasons
 
+
+
+def _rsi14(closes):
+    if len(closes) < 15:
+        return None
+    changes = [closes[i] - closes[i-1] for i in range(len(closes)-14, len(closes))]
+    gains = sum(max(x, 0.0) for x in changes) / 14.0
+    losses = sum(max(-x, 0.0) for x in changes) / 14.0
+    if losses == 0:
+        return 100.0 if gains > 0 else 50.0
+    rs = gains / losses
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def analyze_added_setups(c):
+    """Additional filters/setups; does not replace the original analyzer."""
+    if len(c) < 40:
+        return None
+    o = [f(x["open"]) for x in c]
+    h = [f(x["high"]) for x in c]
+    l = [f(x["low"]) for x in c]
+    cl = [f(x["close"]) for x in c]
+    bodies = [abs(cl[i] - o[i]) for i in range(len(c))]
+    ranges = [max(h[i] - l[i], 1e-12) for i in range(len(c))]
+
+    # A doji disables the newly added setup checks for this candle. The
+    # original strategy is still evaluated unchanged by analyze().
+    last_body_ratio = bodies[-1] / ranges[-1]
+    if last_body_ratio < 0.12:
+        return None
+
+    closes = cl
+    rsi = _rsi14(closes)
+    e9 = sma(closes, 9)
+    e21 = sma(closes, 21)
+    recent_high = max(h[-21:-1])
+    recent_low = min(l[-21:-1])
+    avg_recent_range = statistics.mean(ranges[-14:])
+    tol = max(avg_recent_range * 0.15, 1e-12)
+
+    bullish_trend = e9 > e21
+    bearish_trend = e9 < e21
+    # Approximate market structure using recent 10-candle halves.
+    older_high = max(h[-20:-10]); newer_high = max(h[-10:])
+    older_low = min(l[-20:-10]); newer_low = min(l[-10:])
+    structure_up = newer_high > older_high and newer_low > older_low
+    structure_down = newer_high < older_high and newer_low < older_low
+
+    # Liquidity sweep: wick crosses a recent level, close returns inside.
+    sweep_low = l[-1] < recent_low and cl[-1] > recent_low and cl[-1] > o[-1]
+    sweep_high = h[-1] > recent_high and cl[-1] < recent_high and cl[-1] < o[-1]
+
+    # Breakout then retest: breakout happened on previous candle; latest candle
+    # retested the broken level and closed back in breakout direction.
+    prior_resistance = max(h[-22:-2])
+    prior_support = min(l[-22:-2])
+    breakout_up_prev = cl[-2] > prior_resistance and cl[-2] > o[-2]
+    breakout_down_prev = cl[-2] < prior_support and cl[-2] < o[-2]
+    retest_buy = breakout_up_prev and l[-1] <= prior_resistance + tol and cl[-1] > prior_resistance and cl[-1] > o[-1]
+    retest_sell = breakout_down_prev and h[-1] >= prior_support - tol and cl[-1] < prior_support and cl[-1] < o[-1]
+
+    extra = []
+    # Liquidity sweep + directional candle confirmation + structure/momentum.
+    if sweep_low and (structure_up or bullish_trend) and (rsi is None or rsi >= 45):
+        extra.append(("BUY", 94, "Liquidity sweep + bullish structure", ["Recent low swept and price closed back above it", "Bullish structure/trend confirmation", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
+    if sweep_high and (structure_down or bearish_trend) and (rsi is None or rsi <= 55):
+        extra.append(("SELL", 94, "Liquidity sweep + bearish structure", ["Recent high swept and price closed back below it", "Bearish structure/trend confirmation", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
+    if retest_buy and (rsi is None or rsi > 50):
+        extra.append(("BUY", 93, "Breakout + retest", ["Previous candle broke resistance", "Latest candle retested and held the broken level", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
+    if retest_sell and (rsi is None or rsi < 50):
+        extra.append(("SELL", 93, "Breakout + retest", ["Previous candle broke support", "Latest candle retested and held below the broken level", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
+
+    # User's added five-candle pattern. Big/small are judged RELATIVELY to
+    # recent candle bodies (not a fixed multiplier): first body must rank in
+    # the upper quartile of recent bodies; second body is smaller and below
+    # the recent median. All five pattern candles must be non-doji.
+    if len(c) >= 25:
+        # Pattern sequence ends at the latest closed candle:
+        # big candle, smaller opposite candle, immediate breakout candle,
+        # then two opposite-color candles; entry is next candle.
+        i = len(c) - 5
+        pattern_bodies = bodies[-5:]
+        recent_body_window = sorted(bodies[-25:-5])
+        median_body = statistics.median(recent_body_window) if recent_body_window else 0
+        upper_quartile_rank = sorted(recent_body_window)[int(0.75 * (len(recent_body_window)-1))] if recent_body_window else 0
+        no_doji = all(pattern_bodies[j] / ranges[-5+j] >= 0.12 for j in range(5))
+        big_enough = pattern_bodies[0] >= upper_quartile_rank and pattern_bodies[0] > 0
+        small_enough = pattern_bodies[1] < pattern_bodies[0] and pattern_bodies[1] <= median_body
+        # BUY: big green, small red, immediate break above combined high,
+        # then exactly two red candles. SELL is the mirror image.
+        buy_pattern = (
+            no_doji and big_enough and small_enough and
+            cl[i] > o[i] and cl[i+1] < o[i+1] and
+            h[i+1] <= h[i] and l[i+1] >= l[i] and
+            h[i+2] > max(h[i], h[i+1]) and cl[i+2] > max(h[i], h[i+1]) and
+            cl[i+3] < o[i+3] and cl[i+4] < o[i+4]
+        )
+        sell_pattern = (
+            no_doji and big_enough and small_enough and
+            cl[i] < o[i] and cl[i+1] > o[i+1] and
+            h[i+1] <= h[i] and l[i+1] >= l[i] and
+            l[i+2] < min(l[i], l[i+1]) and cl[i+2] < min(l[i], l[i+1]) and
+            cl[i+3] > o[i+3] and cl[i+4] > o[i+4]
+        )
+        if buy_pattern:
+            extra.append(("BUY", 96, "Big candle â small candle â immediate breakout pattern", ["Big green candle followed by smaller red candle", "Immediate breakout above combined high", "Next two candles were red", "No doji in the five-candle pattern"]))
+        if sell_pattern:
+            extra.append(("SELL", 96, "Big candle â small candle â immediate breakdown pattern", ["Big red candle followed by smaller green candle", "Immediate breakdown below combined low", "Next two candles were green", "No doji in the five-candle pattern"]))
+
+    if not extra:
+        return None
+    directions = {x[0] for x in extra}
+    if len(directions) > 1:
+        return ("NO TRADE", 0, "Added setups conflict", ["New confirmation methods disagree; risk filter says wait"])
+    return max(extra, key=lambda x: x[1])
+
+
+def analyze(c):
+    """Keep original logic; add extra confirmations and setup types on top."""
+    old_signal, old_score, old_setup, old_reasons = analyze_existing(c)
+    added = analyze_added_setups(c)
+    if added is None:
+        return old_signal, old_score, old_setup, old_reasons
+    new_signal, new_score, new_setup, new_reasons = added
+    if new_signal == "NO TRADE":
+        # Doji/conflicting extra checks should prevent a forced new signal;
+        # existing directional setup is still retained unless it is unclear.
+        if old_signal in ("BUY", "SELL"):
+            return "NO TRADE", 0, new_setup, new_reasons + [f"Original setup ({old_signal}) not taken because added risk filter disagreed"]
+        return new_signal, new_score, new_setup, new_reasons
+    if old_signal in ("BUY", "SELL") and old_signal != new_signal:
+        return "NO TRADE", 0, "Signal conflict / risk check", [f"Original setup suggested {old_signal}", f"Added confirmations suggested {new_signal}", "Conflicting directions: no trade"]
+    if old_signal == new_signal:
+        return old_signal, max(old_score, new_score), f"{old_setup} + {new_setup}", old_reasons + new_reasons
+    return new_signal, new_score, new_setup, new_reasons
 
 
 FX_TZ = ZoneInfo("America/New_York")
