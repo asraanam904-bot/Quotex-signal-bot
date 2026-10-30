@@ -754,6 +754,39 @@ def otcharts_test():
             "details": str(e)
         }), 502
 
+@app.get("/api/otcharts/symbols")
+def otcharts_symbols():
+    key = os.getenv("OTCHARTS_API_KEY", "").strip()
 
+    if not key:
+        return jsonify({"ok": False, "error": "OTCHARTS_API_KEY missing"}), 500
+
+    try:
+        r = requests.get(
+            "https://otcharts.com/v1/symbols",
+            params={"venue": "quotex"},
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json"
+            },
+            timeout=15
+        )
+
+        try:
+            data = r.json()
+        except ValueError:
+            data = {"error": "Non-JSON response"}
+
+        return jsonify({
+            "ok": r.ok,
+            "status": r.status_code,
+            "data": data
+        }), r.status_code
+
+    except requests.RequestException:
+        return jsonify({
+            "ok": False,
+            "error": "OTCharts connection failed"
+        }), 502
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
