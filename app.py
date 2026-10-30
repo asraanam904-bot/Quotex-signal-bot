@@ -716,7 +716,42 @@ def tradingview():
 @app.get("/api/latest")
 def get_latest():
     return jsonify(latest)
+@app.get("/api/otcharts/test")
+def otcharts_test():
+    key = os.getenv("OTCHARTS_API_KEY", "").strip()
 
+    if not key:
+        return jsonify({
+            "ok": False,
+            "error": "OTCHARTS_API_KEY missing"
+        }), 500
+
+    try:
+        r = requests.get(
+            "https://otcharts.com/v1/venues",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json"
+            },
+            timeout=10
+        )
+
+        try:
+            data = r.json()
+        except ValueError:
+            data = {"error": "Non-JSON response"}
+
+        return jsonify({
+            "ok": r.ok,
+            "status": r.status_code,
+            "data": data
+        }), r.status_code
+
+    except requests.RequestException:
+        return jsonify({
+            "ok": False,
+            "error": "OTCharts connection failed"
+        }), 502
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
