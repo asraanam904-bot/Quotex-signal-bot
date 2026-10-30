@@ -727,31 +727,33 @@ def otcharts_test():
         }), 500
 
     try:
-        r = requests.get(
+        response = requests.get(
             "https://otcharts.com/v1/venues",
             headers={
                 "Authorization": f"Bearer {key}",
                 "Accept": "application/json"
             },
-            timeout=10
+            timeout=20
         )
 
         try:
-            data = r.json()
+            data = response.json()
         except ValueError:
-            data = {"error": "Non-JSON response"}
+            data = {"message": response.text[:500]}
 
         return jsonify({
-            "ok": r.ok,
-            "status": r.status_code,
+            "ok": response.ok,
+            "status": response.status_code,
             "data": data
-        }), r.status_code
+        }), response.status_code
 
-    except requests.RequestException:
+    except requests.RequestException as e:
         return jsonify({
             "ok": False,
-            "error": "OTCharts connection failed"
+            "error": type(e).__name__,
+            "details": str(e)
         }), 502
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
