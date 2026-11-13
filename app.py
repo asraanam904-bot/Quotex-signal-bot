@@ -788,5 +788,47 @@ def otcharts_symbols():
             "ok": False,
             "error": "OTCharts connection failed"
         }), 502
+@app.get("/api/otcharts/candles")
+def otcharts_candles():
+    key = os.getenv("OTCHARTS_API_KEY", "").strip()
+
+    if not key:
+        return jsonify({"ok": False, "error": "API key missing"}), 500
+
+    symbol = request.args.get("symbol", "USDNGN_otc")
+    tf = request.args.get("tf", "60")
+
+    if tf not in ("60", "300"):
+        return jsonify({"ok": False, "error": "Use tf=60 or tf=300"}), 400
+
+    try:
+        r = requests.get(
+            "https://otcharts.com/v1/candles",
+            params={
+                "venue": "quotex",
+                "symbol": symbol,
+                "tf": tf,
+                "limit": 5
+            },
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json"
+            },
+            timeout=15
+        )
+
+        try:
+            data = r.json()
+        except ValueError:
+            data = {"error": "Invalid API response"}
+
+        return jsonify({
+            "ok": r.ok,
+            "status": r.status_code,
+            "data": data
+        }), r.status_code
+
+    except requests.RequestException:
+        return jsonify({"ok": False, "error": "Connection failed"}), 502
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
