@@ -295,7 +295,8 @@ def analyze_added_setups(c):
     retest_sell = breakout_down_prev and h[-1] >= prior_support - tol and cl[-1] < prior_support and cl[-1] < o[-1]
 
     extra = []
-    # Liquidity sweep + directional candle confirmation + structure/momentum.    if sweep_low and (structure_up or bullish_trend) and (rsi is None or rsi >= 45):
+    # Liquidity sweep + directional candle confirmation + structure/momentum.
+    if sweep_low and (structure_up or bullish_trend) and (rsi is None or rsi >= 45):
         extra.append(("BUY", 94, "Liquidity sweep + bullish structure", ["Recent low swept and price closed back above it", "Bullish structure/trend confirmation", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
     if sweep_high and (structure_down or bearish_trend) and (rsi is None or rsi <= 55):
         extra.append(("SELL", 94, "Liquidity sweep + bearish structure", ["Recent high swept and price closed back below it", "Bearish structure/trend confirmation", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
@@ -466,7 +467,8 @@ def get_open_otc_symbols(force_refresh=False):
     DAILY_CALLS += 1
     response.raise_for_status()
     payload = response.json()
-    rows = payload.get("symbols", []) if isinstance(payload, dict) else []
+    body = payload.get("data", payload) if isinstance(payload, dict) else {}
+    rows = body.get("symbols", []) if isinstance(body, dict) else []
     if not isinstance(rows, list):
         raise RuntimeError("Unexpected OTCharts symbols response")
     symbols = []
@@ -504,10 +506,11 @@ def fetch_market_candles(symbol, interval, force_refresh=False):
     DAILY_CALLS += 1
     response.raise_for_status()
     payload = response.json()
-    rows = payload.get("candles", []) if isinstance(payload, dict) else []
+    body = payload.get("data", payload) if isinstance(payload, dict) else {}
+    rows = body.get("candles", []) if isinstance(body, dict) else []
     if not isinstance(rows, list) or not rows:
         raise RuntimeError("OTCharts returned no candle rows")
-    gaps = payload.get("gaps") or {}
+    gaps = (body.get("gaps") or {}) if isinstance(body, dict) else {}
     if int(gaps.get("missingBars") or 0) > 0:
         raise RuntimeError(f"OTCharts history contains {gaps.get('missingBars')} missing bars; no signal generated")
     candles = completed_candles(rows, interval)
