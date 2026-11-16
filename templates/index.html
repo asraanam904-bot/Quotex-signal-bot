@@ -20,14 +20,8 @@ margin:auto;
 padding:18px 14px 40px
 }
 
-.top{
-padding:8px 4px 15px
-}
-
-.title{
-font-size:28px;
-font-weight:850
-}
+.top{padding:8px 4px 15px}
+.title{font-size:28px;font-weight:850}
 
 .sub{
 color:#91a0bb;
@@ -63,7 +57,8 @@ font-size:16px
 button{
 background:#2563eb;
 border:0;
-font-weight:800
+font-weight:800;
+cursor:pointer
 }
 
 .signal{
@@ -92,9 +87,7 @@ border-bottom:1px solid #253249;
 color:#dbe3f5
 }
 
-.yes{
-color:#7ee787
-}
+.yes{color:#7ee787}
 
 .warn{
 font-size:12px;
@@ -128,36 +121,33 @@ background:#0b1220;
 font-size:14px
 }
 
-.wait{
-color:#f2cc60
-}
-
 .pair{
 color:#91a0bb;
 font-size:12px;
 text-align:center;
 margin-top:8px
 }
+
+@media(max-width:380px){
+.title{font-size:23px}
+.controls{grid-template-columns:1fr}
+}
 </style>
 </head>
 
 <body>
-
 <main>
 
 <div class="top">
-
 <div class="title">
 📈 Quotex Live Signal Assistant
 </div>
 
 <div class="sub">
 <span class="pulse"></span>
-REAL MARKET • Signal-only • Manual trading
+QUOTEX OTC • OTCharts live candles • Signal-only
 </div>
-
 </div>
-
 
 <div class="card">
 
@@ -170,19 +160,16 @@ readonly
 >
 
 <select id="tf">
+<option value="1min">1 Minute</option>
+<option value="5min" selected>5 Minutes</option>
+</select>
 
-<option value="1min">
-1 Minute
-</option>
-
-<option value="5min" selected>
-5 Minutes
-</option>
-
+<select id="market" aria-label="Market mode">
+<option value="otc" selected>OTC MARKET</option>
+<option value="real" disabled>REAL MARKET — NOT VERIFIED</option>
 </select>
 
 </div>
-
 
 <button
 onclick="run()"
@@ -191,21 +178,17 @@ style="margin-top:10px"
 ANALYZE NOW
 </button>
 
-
 <div id="sig" class="signal">
 ⚪
 </div>
-
 
 <div id="score" class="score">
 Waiting…
 </div>
 
-
 <div id="pair" class="pair">
 Automatic pair scanning ON
 </div>
-
 
 <div id="entry" class="entry">
 Entry: —
@@ -215,96 +198,56 @@ Expiry: —
 
 </div>
 
-
 <div class="card">
-
 <div id="nextScan" class="next">
 ⏳ Calculating next auto-scan…
 </div>
-
 </div>
-
 
 <div class="card">
-
 <div id="why"></div>
-
 </div>
 
-
 <div class="card warn">
-
 ⚠️ This is a decision-aid signal engine, not a guarantee.
 No strategy can honestly guarantee a win rate.
-Signals use real market-data candles and are for manual
-Quotex use only. OTC is not scanned.
-
+Signals use OTCharts Quotex OTC candles and are for manual
+Quotex use only. Real-market data is not yet verified.
 </div>
 
 </main>
 
-
 <script>
-
 let timer;
-
 
 /* TIMEFRAME */
 
 function intervalSeconds(tf){
-
 return tf === "1min" ? 60 : 300;
-
 }
-
 
 function label(tf){
-
-return tf === "1min"
-? "1-MINUTE"
-: "5-MINUTE";
-
+return tf === "1min" ? "1-MINUTE" : "5-MINUTE";
 }
-
 
 function expiry(tf){
-
-return tf === "1min"
-? "1 MINUTE"
-: "5 MINUTES";
-
+return tf === "1min" ? "1 MINUTE" : "5 MINUTES";
 }
-
 
 /* COUNTDOWN */
 
 function updateCountdown(){
 
-const tf =
-document.getElementById("tf").value;
+const tf = document.getElementById("tf").value;
+const sec = intervalSeconds(tf);
+const now = Math.floor(Date.now()/1000);
+const next = (Math.floor(now/sec)+1)*sec;
+const left = next-now;
 
-const sec =
-intervalSeconds(tf);
+const mm = String(Math.floor(left/60)).padStart(2,"0");
+const ss = String(left%60).padStart(2,"0");
 
-const now =
-Math.floor(Date.now()/1000);
-
-const next =
-(Math.floor(now/sec)+1)*sec;
-
-const left =
-next-now;
-
-
-const mm =
-String(Math.floor(left/60)).padStart(2,"0");
-
-const ss =
-String(left%60).padStart(2,"0");
-
-
-const t =
-new Date(next*1000).toLocaleTimeString(
+const t = new Date(next*1000).toLocaleTimeString(
 "en-IN",
 {
 timeZone:"Asia/Kolkata",
@@ -313,7 +256,6 @@ minute:"2-digit",
 hour12:true
 }
 );
-
 
 document.getElementById("nextScan").innerHTML =
 "⏳ <b>Next auto-scan:</b> "
@@ -328,189 +270,128 @@ label(tf)+
 
 }
 
-
 /* MAIN SCAN */
 
 async function run(){
 
-const interval =
-document.getElementById("tf").value;
-
+const interval = document.getElementById("tf").value;
+const market = document.getElementById("market").value;
 
 document.getElementById("score").textContent =
 "Scanning automatic pairs…";
 
-
 try{
 
-const r =
-await fetch(
+const r = await fetch(
 "/api/scan?interval="
-+encodeURIComponent(interval),
++encodeURIComponent(interval)
++"&market="
++encodeURIComponent(market),
 {
 cache:"no-store"
 }
 );
 
-
-const d =
-await r.json();
-
+const d = await r.json();
 
 if(d.error){
 
-document.getElementById("sig").textContent =
-"⚠️";
-
-document.getElementById("score").textContent =
-d.error;
-
+document.getElementById("sig").textContent = "⚠️";
+document.getElementById("score").textContent = d.error;
 return;
 
 }
 
-
 /* STRONGEST SIGNAL */
 
 const s =
-d.signals &&
-d.signals.length
+d.signals && d.signals.length
 ? d.signals[0]
 : null;
-
 
 if(!s){
 
 document.getElementById("sig").textContent =
 "⚪ NO TRADE";
 
-
 document.getElementById("score").textContent =
-d.message ||
-"No qualifying setup";
-
+d.message || "No qualifying setup";
 
 document.getElementById("pair").textContent =
-"Pairs scanned: "
-+
+"Pairs scanned: " +
 (d.scanned_pairs || []).join(" • ");
-
 
 document.getElementById("entry").innerHTML =
 "Entry: —<br>Expiry: —";
 
-
-}
-
-else{
-
+}else{
 
 /* BUY / SELL */
 
 if(s.signal === "BUY"){
-
-document.getElementById("sig").textContent =
-"🟢 BUY";
-
+document.getElementById("sig").textContent = "🟢 BUY";
 }
-
 else if(s.signal === "SELL"){
-
-document.getElementById("sig").textContent =
-"🔴 SELL";
-
+document.getElementById("sig").textContent = "🔴 SELL";
 }
-
 else{
-
-document.getElementById("sig").textContent =
-"⚪ NO TRADE";
-
+document.getElementById("sig").textContent = "⚪ NO TRADE";
 }
-
 
 /* SCORE */
 
 document.getElementById("score").textContent =
-s.symbol
-+
-" • "
-+
-(d.interval || interval)
-+
-" • confirmation "
-+
-(s.score || 0)
-+
-"/100"
-+
+s.symbol +
+" • " +
+(d.interval || interval) +
+" • confirmation " +
+(s.score || 0) +
+"/100" +
 (s.price ? " • "+s.price : "");
-
 
 /* AUTO PAIR */
 
 document.getElementById("pair").textContent =
-"🤖 Auto-selected pair: "
-+
-s.symbol
-+
-" • "
-+
+"🤖 Auto-selected pair: " +
+s.symbol +
+" • " +
 (d.active_pairs_this_scan || []).join(" • ");
-
 
 /* ENTRY + EXPIRY */
 
 document.getElementById("entry").innerHTML =
-"👉 Entry: <b>NEXT "
-+
-label(interval)
-+
-" CANDLE</b>"
-+
-"<br>"
-+
-"⏰ Expiry: <b>"
-+
-expiry(interval)
-+
+"👉 Entry: <b>NEXT " +
+label(interval) +
+" CANDLE</b>" +
+"<br>" +
+"⏰ Expiry: <b>" +
+expiry(interval) +
 "</b>";
 
 }
 
-
 /* REASONS */
 
 document.getElementById("why").innerHTML =
-
 (s && s.reasons
 ? s.reasons
 : ["No clear setup — WAIT"])
 
 .map(function(x){
-
 return `
 <div class="row">
-
 <span>${x}</span>
-
-<span class="yes">
-✓
-</span>
-
+<span class="yes">✓</span>
 </div>
 `;
-
 })
 .join("");
-
 
 }
 
 catch(e){
 
-document.getElementById("sig").textContent =
-"⚠️";
+document.getElementById("sig").textContent = "⚠️";
 
 document.getElementById("score").textContent =
 "Connection error. Please try again.";
@@ -519,55 +400,43 @@ document.getElementById("score").textContent =
 
 }
 
-
 /* TIMEFRAME CHANGE */
 
-document
-.getElementById("tf")
-.addEventListener(
+document.getElementById("tf").addEventListener(
 "change",
 function(){
-
 updateCountdown();
-
 run();
-
 }
 );
 
+/* MARKET MODE CHANGE */
+
+document.getElementById("market").addEventListener(
+"change",
+function(){
+run();
+}
+);
 
 /* START */
 
 run();
-
 updateCountdown();
-
 
 /* AUTO SCAN */
 
-timer =
-setInterval(
+timer = setInterval(
 function(){
 
 updateCountdown();
 
-
-const tf =
-document.getElementById("tf").value;
-
-const sec =
-intervalSeconds(tf);
-
-const u =
-Math.floor(Date.now()/1000);
-
-
-/* New candle closed */
+const tf = document.getElementById("tf").value;
+const sec = intervalSeconds(tf);
+const u = Math.floor(Date.now()/1000);
 
 if(u % sec <= 1){
-
 run();
-
 }
 
 },
