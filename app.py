@@ -21,17 +21,14 @@ latest = {
 }
 last_alert = ""
 
-# Free-plan friendly market-data cache/budget.
-# Twelve Data /time_series costs 1 credit per symbol; batching reduces HTTP
-# overhead but does NOT reduce symbol credits. We therefore rotate pairs and
-# cache each pair until its next refresh window.
+# OTCharts Lite API request budget. The provider documents 7,000 requests/day.
+# The live stream should be preferred over repeatedly polling candle history.
 CANDLE_CACHE = {}
 DAILY_CALLS = 0
 DAILY_CALLS_DATE = ""
 
-# Keep the free 800/day plan below its daily limit. These limits are deliberately
-# conservative and leave headroom for occasional manual /api/live requests.
-DAILY_BUDGET = 6000
+# Leave a small safety margin below the documented 7,000-request daily quota.
+DAILY_BUDGET = 6500
 SCAN_RESULT_CACHE = {}
 
 REFRESH_EVERY = {"1min": 55, "5min": 260}
