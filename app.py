@@ -7,13 +7,13 @@ from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__)
 
-KEY = os.getenv("TWELVE_DATA_API_KEY", "")
+OTC_KEY = os.getenv("OTCHARTS_API_KEY", "").strip()
 TV_TOKEN = os.getenv("TV_WEBHOOK_TOKEN", "CHANGE_ME")
 
 latest = {
     "signal": "NO TRADE",
     "score": 0,
-    "symbol": "EUR/USD",
+    "symbol": "AUTO OTC",
     "timeframe": "5min",
     "setup": "Waiting",
     "reasons": ["Waiting for live market data"],
@@ -31,15 +31,13 @@ DAILY_CALLS_DATE = ""
 
 # Keep the free 800/day plan below its daily limit. These limits are deliberately
 # conservative and leave headroom for occasional manual /api/live requests.
-DAILY_BUDGET = 700
+DAILY_BUDGET = 6000
 SCAN_RESULT_CACHE = {}
 
-REFRESH_EVERY = {
-    "1min": 14 * 60,   # one pair refresh roughly every 14 min
-    "5min": 20 * 60,   # each pair refreshed roughly every 20 min
-    "15min": 60 * 60,  # each pair refreshed roughly every hour
-    "1h": 4 * 60 * 60
-}
+REFRESH_EVERY = {"1min": 55, "5min": 260}
+OTC_SYMBOL_CACHE = {"symbols": [], "fetched_at": 0}
+OTC_SYMBOL_REFRESH_SECONDS = 15 * 60
+
 
 def _budget_reset_if_needed():
     global DAILY_CALLS, DAILY_CALLS_DATE
@@ -70,7 +68,7 @@ def _credit_safe_error():
     return (
         f"Daily data-request safety limit reached ({DAILY_CALLS}/{DAILY_BUDGET}). "
         "Cached data will be used until the next UTC day. "
-        "This protects the Twelve Data free 800/day quota."
+        "This protects the configured OTCharts request safety budget."
     )
 
 
@@ -297,8 +295,7 @@ def analyze_added_setups(c):
     retest_sell = breakout_down_prev and h[-1] >= prior_support - tol and cl[-1] < prior_support and cl[-1] < o[-1]
 
     extra = []
-    # Liquidity sweep + directional candle confirmation + structure/momentum.
-    if sweep_low and (structure_up or bullish_trend) and (rsi is None or rsi >= 45):
+    # Liquidity sweep + directional candle confirmation + structure/momentum.    if sweep_low and (structure_up or bullish_trend) and (rsi is None or rsi >= 45):
         extra.append(("BUY", 94, "Liquidity sweep + bullish structure", ["Recent low swept and price closed back above it", "Bullish structure/trend confirmation", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
     if sweep_high and (structure_down or bearish_trend) and (rsi is None or rsi <= 55):
         extra.append(("SELL", 94, "Liquidity sweep + bearish structure", ["Recent high swept and price closed back below it", "Bearish structure/trend confirmation", f"RSI(14): {rsi:.1f}" if rsi is not None else "RSI unavailable"]))
@@ -409,41 +406,125 @@ def interval_seconds(interval):
 
 
 def completed_candles(values, interval):
-    """Keep only fully closed UTC candles and reject stale feeds."""
+    """Normalize OTCharts Unix-time OHLC bars and retain closed, fresh candles."""
     sec = interval_seconds(interval)
     now = datetime.now(timezone.utc)
-
     completed = []
-    for x in values:
+    for item in values:
         try:
-            dt = datetime.fromisoformat(
-                x["datetime"].replace("Z", "+00:00")
-            )
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            raw_time = item.get("time", item.get("datetime"))
+            if raw_time is None:
+                continue
+            if isinstance(raw_time, (int, float)) or str(raw_time).strip().isdigit():
+                stamp = float(raw_time)
+                if stamp > 10_000_000_000:
+                    stamp /= 1000.0
+                dt = datetime.fromtimestamp(stamp, tz=timezone.utc)
+            else:
+                dt = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                else:
+                    dt = dt.astimezone(timezone.utc)
             if dt + timedelta(seconds=sec) <= now:
-                completed.append({
-                    "open": f(x["open"]),
-                    "high": f(x["high"]),
-                    "low": f(x["low"]),
-                    "close": f(x["close"]),
-                    "_dt": dt
-                })
-        except Exception:
+                completed.append({"open": f(item["open"]), "high": f(item["high"]),
+                                  "low": f(item["low"]), "close": f(item["close"]), "_dt": dt})
+        except (KeyError, TypeError, ValueError, OverflowError):
             continue
-
-    completed.sort(key=lambda z: z["_dt"])
-
+    completed.sort(key=lambda row: row["_dt"])
     if not completed:
         return []
-
-    # Do not generate a signal from an old/stale market feed.
-    age = (now - completed[-1]["_dt"]).total_seconds()
-    max_age = max(sec * 3, 15 * 60)
-    if age > max_age:
+    if (now - completed[-1]["_dt"]).total_seconds() > max(sec * 3, 180):
         return []
+    return [{k: v for k, v in row.items() if k != "_dt"} for row in completed]
 
-    return [{k: v for k, v in x.items() if k != "_dt"} for x in completed]
+
+def normalize_otc_symbol(symbol):
+    value = str(symbol or "").strip()
+    if value.lower().endswith("_otc"):
+        value = value[:-4]
+    value = value.replace("/", "").replace(" ", "").upper()
+    if len(value) != 6 or not value.isalpha():
+        raise ValueError("Choose a six-letter Quotex OTC forex pair, e.g. EURUSD_otc")
+    return value + "_otc"
+
+
+def get_open_otc_symbols(force_refresh=False):
+    """Read the live Quotex catalogue and only select broker-reported open OTC FX pairs."""
+    global DAILY_CALLS
+    if not OTC_KEY:
+        raise RuntimeError("OTCHARTS_API_KEY is missing from Render Environment")
+    cached = OTC_SYMBOL_CACHE["symbols"]
+    if cached and time.time() - OTC_SYMBOL_CACHE["fetched_at"] < OTC_SYMBOL_REFRESH_SECONDS and not force_refresh:
+        return cached
+    if not _refresh_allowed():
+        if cached:
+            return cached
+        raise RuntimeError(_credit_safe_error())
+    response = requests.get("https://otcharts.com/v1/symbols", params={"venue": "quotex"},
+        headers={"Authorization": f"Bearer {OTC_KEY}", "Accept": "application/json"}, timeout=15)
+    DAILY_CALLS += 1
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("symbols", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        raise RuntimeError("Unexpected OTCharts symbols response")
+    symbols = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol", ""))
+        if (row.get("isOtc") is True and row.get("open") is True
+            and symbol.lower().endswith("_otc") and len(symbol[:-4]) == 6
+            and symbol[:-4].isalpha()):
+            symbols.append(symbol)
+    if not symbols:
+        raise RuntimeError("OTCharts currently reports no open Quotex OTC forex pairs")
+    OTC_SYMBOL_CACHE.update({"symbols": symbols, "fetched_at": time.time()})
+    return symbols
+
+
+def fetch_market_candles(symbol, interval, force_refresh=False):
+    """Fetch Quotex OHLC history from OTCharts; analyze only fresh closed candles."""
+    global DAILY_CALLS
+    if interval not in ("1min", "5min"):
+        raise ValueError("Only 1min and 5min are supported")
+    symbol = normalize_otc_symbol(symbol)
+    _budget_reset_if_needed()
+    cached, age = _cached_candles(symbol, interval)
+    if cached is not None and not force_refresh:
+        return cached
+    if not _refresh_allowed():
+        raise RuntimeError("OTCharts safety budget reached; refusing to signal from stale candles")
+    if not OTC_KEY:
+        raise RuntimeError("OTCHARTS_API_KEY is missing from Render Environment")
+    response = requests.get("https://otcharts.com/v1/candles",
+        params={"venue": "quotex", "symbol": symbol, "tf": str(interval_seconds(interval)), "limit": 100},
+        headers={"Authorization": f"Bearer {OTC_KEY}", "Accept": "application/json"}, timeout=15)
+    DAILY_CALLS += 1
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("candles", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("OTCharts returned no candle rows")
+    gaps = payload.get("gaps") or {}
+    if int(gaps.get("missingBars") or 0) > 0:
+        raise RuntimeError(f"OTCharts history contains {gaps.get('missingBars')} missing bars; no signal generated")
+    candles = completed_candles(rows, interval)
+    if len(candles) < 40:
+        raise RuntimeError(f"Only {len(candles)} fresh closed candles received; 40 are required")
+    CANDLE_CACHE[_cache_key(symbol, interval)] = {"candles": candles, "fetched_at": time.time()}
+    return candles
+
+
+def choose_scan_pairs(interval, available_symbols=None):
+    symbols = available_symbols or get_open_otc_symbols()
+    if not symbols:
+        raise RuntimeError("No open Quotex OTC forex pairs")
+    bucket = int(time.time() // interval_seconds(interval))
+    slots = min(2 if interval == "5min" else 1, len(symbols))
+    start = bucket % len(symbols)
+    return [symbols[(start + i) % len(symbols)] for i in range(slots)]
 
 
 def fetch_market_candles(symbol, interval, force_refresh=False):
@@ -520,184 +601,93 @@ def home():
 @app.get("/api/live")
 def live():
     global latest
-
-    symbol = request.args.get("symbol", "EUR/USD").upper()
     interval = request.args.get("interval", "5min")
-
-    if not KEY:
-        return jsonify({"error": "API key missing. Add TWELVE_DATA_API_KEY to Render Environment."})
-
-    if not fx_market_open():
-        latest = {
-            "signal": "NO TRADE",
-            "score": 0,
-            "symbol": symbol,
-            "timeframe": interval,
-            "setup": "REAL MARKET CLOSED",
-            "reasons": ["Forex real market is closed. OTC is not scanned."],
-            "updated": time.time(),
-            "signal_time_ist": india_time_string(),
-            "timezone": "UTC+05:30"
-        }
-        return jsonify(latest)
-
+    if interval not in ("1min", "5min"):
+        interval = "5min"
     try:
+        available = get_open_otc_symbols()
+        symbol = normalize_otc_symbol(request.args.get("symbol") or available[0])
+        if symbol not in available:
+            return jsonify({"error": "This Quotex OTC pair is not currently reported open by OTCharts"}), 400
         candles = fetch_market_candles(symbol, interval)
         signal, score, setup, reasons = analyze(candles)
-        price = candles[-1]["close"]
-
-        latest = {
-            "signal": signal,
-            "score": score,
-            "symbol": symbol,
-            "timeframe": interval,
-            "setup": setup,
-            "reasons": reasons + ["Signal based on the latest CLOSED candle"],
-            "updated": time.time(),
-            "price": price,
-            "signal_time_ist": india_time_string(),
-            "timezone": "UTC+05:30"
-        }
-
+        latest = {"signal": signal, "score": score, "symbol": symbol, "timeframe": interval,
+            "setup": setup, "reasons": reasons + ["OTCharts Quotex OTC: latest fully closed candle"],
+            "updated": time.time(), "price": candles[-1]["close"], "market": "QUOTEX OTC",
+            "otc": True, "signal_time_ist": india_time_string(), "timezone": "UTC+05:30"}
         return jsonify(latest)
-
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error": str(e), "market": "QUOTEX OTC", "otc": True}), 502
 
 
 @app.get("/api/scan")
 def scan():
-    """One scan per newly closed candle; return at most ONE signal."""
+    """Scan open Quotex OTC forex instruments and return at most one signal."""
     interval = request.args.get("interval", "5min")
-
-    # Only the two supported trading timeframes are exposed in the UI.
     if interval not in ("1min", "5min"):
         interval = "5min"
-
-    if not KEY:
-        return jsonify({"error": "API key missing. Add TWELVE_DATA_API_KEY to Render Environment."})
-
-    if not fx_market_open():
-        return jsonify({
-            "market": "QUOTEX_LIVE_SIGNAL_ASSISTANT",
-            "market_open": False,
-            "otc": False,
-            "interval": interval,
-            "scanned_pairs": SCAN_PAIRS,
-            "signals": [],
-            "pair_status": [],
-            "errors": [],
-            "count": 0,
-            "message": "REAL MARKET CLOSED â NO SIGNALS",
-            "execution": "MANUAL_QUOTEX_ONLY",
-            "current_time_ist": india_time_string(),
-            "timezone": "UTC+05:30"
-        })
-
-    # Current candle bucket identifies the newly forming candle.
-    # The latest fully closed candle is the previous bucket.
+    if request.args.get("market", "otc").lower() == "real":
+        return jsonify({"real_market_available": False, "signals": [], "count": 0,
+            "message": "Your connected Lite key opens the Quotex book only. Real-market prices require the separate forex book."}), 400
     candle_bucket = int(time.time() // interval_seconds(interval))
     cache_key = (interval, candle_bucket)
-    cached_result = SCAN_RESULT_CACHE.get(cache_key)
-    if cached_result is not None:
-        return jsonify(cached_result)
-
-    active_pairs = choose_scan_pairs(interval)
-    results = []
-    pair_status = []
-    errors = []
-
-    # IMPORTANT: only the active pairs get fresh data. We do not use older
-    # cached candles as a new signal because the user requested one signal
-    # based on each newly closed 5-minute candle.
+    if cache_key in SCAN_RESULT_CACHE:
+        return jsonify(SCAN_RESULT_CACHE[cache_key])
+    try:
+        available_symbols = get_open_otc_symbols()
+        active_pairs = choose_scan_pairs(interval, available_symbols)
+    except Exception as e:
+        return jsonify({"market": "QUOTEX_LIVE_SIGNAL_ASSISTANT", "market_open": False, "otc": True,
+            "interval": interval, "scanned_pairs": [], "signals": [], "pair_status": [],
+            "errors": [{"error": str(e)}], "count": 0,
+            "message": "OTCharts Quotex OTC symbols unavailable; no signal generated.",
+            "execution": "MANUAL_QUOTEX_ONLY", "current_time_ist": india_time_string()}), 502
+    results, pair_status, errors = [], [], []
     for symbol in active_pairs:
         try:
             candles = fetch_market_candles(symbol, interval, force_refresh=True)
             signal, score, setup, reasons = analyze(candles)
             price = candles[-1]["close"]
-
             if signal in ("BUY", "SELL"):
-                result = {
-                    "signal": signal,
-                    "score": score,
-                    "symbol": symbol,
-                    "timeframe": interval,
-                    "interval": interval,
-                    "setup": setup,
-                    "reasons": reasons + [f"Based on the latest fully CLOSED {interval} candle"],
-                    "price": price,
-                    "updated": time.time(),
-                    "signal_time_ist": india_time_string(),
+                result = {"signal": signal, "score": score, "symbol": symbol, "timeframe": interval,
+                    "interval": interval, "setup": setup,
+                    "reasons": reasons + [f"OTCharts latest fully CLOSED {interval} candle"],
+                    "price": price, "updated": time.time(), "signal_time_ist": india_time_string(),
                     "entry": f"NEXT {interval.upper()} CANDLE",
                     "expiry": "1 MINUTE" if interval == "1min" else "5 MINUTES",
-                    "execution": "MANUAL_QUOTEX_ONLY",
-                    "timezone": "UTC+05:30"
-                }
+                    "execution": "MANUAL_QUOTEX_ONLY", "timezone": "UTC+05:30"}
                 results.append(result)
-                pair_status.append({
-                    "symbol": symbol, "signal": signal, "score": score,
-                    "setup": setup, "reasons": result["reasons"]
-                })
+                pair_status.append({"symbol": symbol, "signal": signal, "score": score,
+                    "setup": setup, "reasons": result["reasons"]})
             else:
-                pair_status.append({
-                    "symbol": symbol, "signal": "NO TRADE", "score": 0,
-                    "setup": setup, "reasons": reasons
-                })
-
+                pair_status.append({"symbol": symbol, "signal": "NO TRADE", "score": 0,
+                    "setup": setup, "reasons": reasons})
         except Exception as e:
-            msg = str(e)
-            errors.append({"symbol": symbol, "error": msg})
-            pair_status.append({
-                "symbol": symbol, "signal": "DATA ERROR", "score": 0,
-                "setup": "Unavailable", "reasons": [msg]
-            })
-
-    # One signal maximum for each newly closed candle. If two active pairs
-    # qualify, choose the stronger setup.
-    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+            errors.append({"symbol": symbol, "error": str(e)})
+            pair_status.append({"symbol": symbol, "signal": "DATA ERROR", "score": 0,
+                "setup": "Unavailable", "reasons": [str(e)]})
+    results.sort(key=lambda row: row.get("score", 0), reverse=True)
     top_result = results[:1]
-
-    if not top_result and not errors:
-        message = f"No qualifying setup on this newly closed {interval} candle."
-    elif not top_result and errors:
-        message = "Fresh data was unavailable for this candle; no signal generated."
-    else:
-        message = f"One strongest signal selected for the NEXT {interval} candle."
-
-    response = {
-        "market": "QUOTEX_LIVE_SIGNAL_ASSISTANT",
-        "market_open": True,
-        "otc": False,
-        "interval": interval,
-        "scanned_pairs": active_pairs,
-        "active_pairs_this_scan": active_pairs,
-        "signals": top_result,
-        "all_signal_count": len(results),
-        "pair_status": pair_status,
-        "errors": errors,
-        "count": len(top_result),
-        "current_time_ist": india_time_string(),
-        "timezone": "UTC+05:30",
-        "display_limit": 1,
+    message = (f"No qualifying setup on this newly closed {interval} candle." if not top_result and not errors
+        else "Fresh data unavailable or incomplete; no signal generated." if not top_result
+        else f"One strongest signal selected for the NEXT {interval} candle.")
+    response = {"market": "QUOTEX_LIVE_SIGNAL_ASSISTANT", "market_open": True, "otc": True,
+        "interval": interval, "scanned_pairs": active_pairs, "active_pairs_this_scan": active_pairs,
+        "signals": top_result, "all_signal_count": len(results), "pair_status": pair_status,
+        "errors": errors, "count": len(top_result), "current_time_ist": india_time_string(),
+        "timezone": "UTC+05:30", "display_limit": 1,
         "signal_basis": f"LATEST FULLY CLOSED {interval} CANDLE",
         "entry": f"NEXT {interval.upper()} CANDLE",
         "expiry": "1 MINUTE" if interval == "1min" else "5 MINUTES",
-        "one_signal_per_closed_candle": True,
-        "candle_bucket": candle_bucket,
+        "one_signal_per_closed_candle": True, "candle_bucket": candle_bucket,
         "api_budget": {"local_calls_today": DAILY_CALLS, "local_daily_budget": DAILY_BUDGET},
-        "note": "Only fresh pairs are used for the new candle; repeated requests for the same candle are served from cache.",
-        "message": message
-    }
-
+        "message": message}
     SCAN_RESULT_CACHE[cache_key] = response
-
-    # Keep memory bounded.
     if len(SCAN_RESULT_CACHE) > 100:
-        oldest = sorted(SCAN_RESULT_CACHE, key=lambda k: k[1])[:-50]
-        for k in oldest:
-            SCAN_RESULT_CACHE.pop(k, None)
-
+        for old_key in sorted(SCAN_RESULT_CACHE, key=lambda k: k[1])[:-50]:
+            SCAN_RESULT_CACHE.pop(old_key, None)
     return jsonify(response)
+
 
 
 @app.post("/api/tradingview")
