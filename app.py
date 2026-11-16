@@ -399,7 +399,6 @@ def india_time_string(dt=None):
     dt = dt or datetime.now(timezone.utc)
     return dt.astimezone(IST).strftime("%d-%m-%Y %I:%M:%S %p")
 
-
 def interval_seconds(interval):
     return {
         "1min": 60,
@@ -808,7 +807,7 @@ def otcharts_candles():
                 "venue": "quotex",
                 "symbol": symbol,
                 "tf": tf,
-                "limit": 5
+                "limit": 100
             },
             headers={
                 "Authorization": f"Bearer {key}",
