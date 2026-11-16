@@ -639,6 +639,57 @@ def tradingview():
 @app.get("/api/latest")
 def get_latest():
     return jsonify(latest)
+@app.get("/api/otcharts/health")
+def otcharts_health():
+    """Safe live-feed diagnostic: exposes counts and timestamps, never the API key."""
+    key = os.getenv("OTCHARTS_API_KEY", "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "OTCHARTS_API_KEY missing"}), 500
+    symbol = request.args.get("symbol", "USDNGN_otc")
+    tf = request.args.get("tf", "60")
+    if tf not in ("60", "300"):
+        return jsonify({"ok": False, "error": "Use tf=60 or tf=300"}), 400
+    try:
+        headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+        sr = requests.get("https://otcharts.com/v1/symbols",
+            params={"venue": "quotex"}, headers=headers, timeout=15)
+        sr.raise_for_status()
+        sp = sr.json()
+        symbol_body = sp.get("data", sp) if isinstance(sp, dict) else {}
+        symbol_rows = symbol_body.get("symbols", []) if isinstance(symbol_body, dict) else []
+        selected = next((x for x in symbol_rows if isinstance(x, dict) and x.get("symbol") == symbol), None)
+        cr = requests.get("https://otcharts.com/v1/candles",
+            params={"venue": "quotex", "symbol": symbol, "tf": tf, "limit": 100},
+            headers=headers, timeout=15)
+        cr.raise_for_status()
+        cp = cr.json()
+        candle_body = cp.get("data", cp) if isinstance(cp, dict) else {}
+        rows = candle_body.get("candles", []) if isinstance(candle_body, dict) else []
+        interval = "1min" if tf == "60" else "5min"
+        closed = completed_candles(rows if isinstance(rows, list) else [], interval)
+        gaps = candle_body.get("gaps", {}) if isinstance(candle_body, dict) else {}
+        return jsonify({
+            "ok": bool(selected and selected.get("isOtc") is True and selected.get("open") is True),
+            "venue": "quotex", "symbol": symbol, "tf_seconds": int(tf),
+            "symbol_found": selected is not None,
+            "is_otc": selected.get("isOtc") if selected else None,
+            "broker_reports_open": selected.get("open") if selected else None,
+            "raw_candles": len(rows) if isinstance(rows, list) else 0,
+            "closed_fresh_candles": len(closed), "minimum_required": 40,
+            "latest_closed_close": closed[-1]["close"] if closed else None,
+            "latest_closed_candle_available": bool(closed),
+            "gaps": gaps,
+            "ready_for_signal_analysis": bool(selected and selected.get("isOtc") is True
+                and selected.get("open") is True and len(closed) >= 40
+                and not int((gaps or {}).get("missingBars") or 0)),
+            "api_status": {"symbols": sr.status_code, "candles": cr.status_code}
+        })
+    except requests.RequestException as e:
+        return jsonify({"ok": False, "error": type(e).__name__, "details": str(e)}), 502
+    except (ValueError, TypeError, KeyError) as e:
+        return jsonify({"ok": False, "error": "Unexpected OTCharts response", "details": str(e)}), 502
+
+
 @app.get("/api/otcharts/test")
 def otcharts_test():
     key = os.getenv("OTCHARTS_API_KEY", "").strip()
